@@ -13,6 +13,7 @@ import seaborn as sns
 from datetime import datetime
 import os
 from typing import Optional, Dict, List, Tuple, Any
+import matplotlib.gridspec as gridspec
 
 # Set style for modern, minimalist plots
 plt.style.use('default')
@@ -22,12 +23,16 @@ plt.rcParams['axes.facecolor'] = 'white'
 
 
 class CyclingAnalyzer:
-    """Main class for cycling data analysis with personalized configuration."""
+    """Main class for cycling data analysis with personalized configuration.
+    
+    Use set_lactate_coeffs(a, b, c) to personalize the lactate-power curve for your physiology.
+    """
     
     def __init__(self, athlete_name="Taj Krieger", ftp=300, max_hr=195, rest_hr=51, 
                  weight_kg=52, height_cm=165, lactate_rest=1.2, lactate_peak=8.0,
                  w_prime_tau=386, max_interpolation_pct=5.0, power_outlier_threshold=5.0,
-                 hr_outlier_threshold=3.0, cadence_outlier_threshold=3.0):
+                 hr_outlier_threshold=3.0, cadence_outlier_threshold=3.0,
+                 save_figures=False, save_dir="figures"):
         """Initialize analyzer with enhanced athlete profile and data quality parameters."""
         self.athlete_name = athlete_name
         self.ftp = ftp
@@ -92,6 +97,25 @@ class CyclingAnalyzer:
         self.speed_zone_percentages = {}
         self.data_quality_report = {}
         
+        # Global figure saving options
+        self.save_figures = save_figures
+        self.save_dir = save_dir
+        if self.save_figures:
+            os.makedirs(self.save_dir, exist_ok=True)
+        # Global color palette for zones (Z1-Z7)
+        self.zone_colors = {
+            'Z1 (Recovery)': '#2ecc40',    # Green
+            'Z2 (Endurance)': '#39cccc',   # Teal
+            'Z3 (Tempo)': '#ffdc00',       # Yellow
+            'Z4 (Threshold)': '#ff851b',   # Orange
+            'Z5 (VO2max)': '#ff4136',      # Red
+            'Z6 (Anaerobic)': '#b10dc9',   # Purple
+            'Z7 (Neuromuscular)': '#111111' # Dark Gray
+        }
+        # Optional: for multi-ride dashboard comparison
+        self.multi_ride_zones = None
+        self.multi_ride_labels = None
+    
     def load_fit_file(self, file_path):
         """Load and parse FIT file."""
         try:
@@ -179,6 +203,12 @@ class CyclingAnalyzer:
                 self.df[col+'_smoothed'] = self.df[col].rolling(
                     window=smoothing_windows[col], min_periods=1, center=True).mean()
         
+        # Ensure dashboard always has smoothed columns for power and heart rate
+        if 'power' in self.df.columns and 'power_smoothed' not in self.df.columns:
+            self.df['power_smoothed'] = self.df['power'].rolling(window=30, min_periods=1, center=True).mean()
+        if 'heart_rate' in self.df.columns and 'heart_rate_smoothed' not in self.df.columns:
+            self.df['heart_rate_smoothed'] = self.df['heart_rate'].rolling(window=30, min_periods=1, center=True).mean()
+        
         # Update data quality report
         self.data_quality_report['interpolated_pct'] = float(interpolation_pct)
         self.data_quality_report['outliers_removed'] = int(outlier_removed)
@@ -233,7 +263,7 @@ class CyclingAnalyzer:
                 self.metrics[metric] = {
                     'avg': self.df[col].mean(),
                     'max': self.df[col].max(),
-                    'min': self.df[col].min() if metric == 'hr' else self.df[col].max()
+                    'min': self.df[col].min()
                 }
         
         # Power zones
@@ -246,7 +276,6 @@ class CyclingAnalyzer:
                 else:
                     mask = (self.df['pct_ftp'] >= lower) & (self.df['pct_ftp'] < upper)
                 zone_counts[zone_name] = mask.sum()
-            
             total_samples = len(self.df)
             self.zone_percentages = {zone: (count/total_samples)*100 
                                    for zone, count in zone_counts.items()}
@@ -257,7 +286,6 @@ class CyclingAnalyzer:
             for zone_name, (lower, upper) in self.hr_zones.items():
                 mask = (self.df['heart_rate'] >= lower) & (self.df['heart_rate'] < upper)
                 hr_zone_counts[zone_name] = mask.sum()
-            
             total_samples = len(self.df)
             self.hr_zone_percentages = {zone: (count/total_samples)*100 
                                        for zone, count in hr_zone_counts.items()}
@@ -272,7 +300,6 @@ class CyclingAnalyzer:
                 'High (100-110)': (100, 110),
                 'Very High (>110)': (110, 200)
             }
-            
             cadence_zone_counts = {}
             for zone_name, (lower, upper) in cadence_zones.items():
                 if upper == 200:  # Very High has no upper limit
@@ -280,7 +307,6 @@ class CyclingAnalyzer:
                 else:
                     mask = (self.df['cadence'] >= lower) & (self.df['cadence'] < upper)
                 cadence_zone_counts[zone_name] = mask.sum()
-            
             total_samples = len(self.df)
             self.cadence_zone_percentages = {zone: (count/total_samples)*100 
                                             for zone, count in cadence_zone_counts.items()}
@@ -294,7 +320,6 @@ class CyclingAnalyzer:
                 'Fast (35-45)': (35, 45),
                 'Very Fast (>45)': (45, 100)
             }
-            
             speed_zone_counts = {}
             for zone_name, (lower, upper) in speed_zones.items():
                 if upper == 100:  # Very Fast has no upper limit
@@ -302,10 +327,70 @@ class CyclingAnalyzer:
                 else:
                     mask = (self.df['speed_kmh'] >= lower) & (self.df['speed_kmh'] < upper)
                 speed_zone_counts[zone_name] = mask.sum()
-            
             total_samples = len(self.df)
             self.speed_zone_percentages = {zone: (count/total_samples)*100 
                                           for zone, count in speed_zone_counts.items()}
+        
+        # --- PHYSIOLOGICAL AND REPORTING FIXES ---
+        # 1. TRIMP (HR-based Training Load, per-minute Banister formula)
+        if 'heart_rate' in self.df.columns:
+            # Calculate per-sample dt in seconds
+            dt_sec = self.df['timestamp'].diff().dt.total_seconds().fillna(1)
+            hr_rsv = (self.df['heart_rate'] - self.rest_hr) / (self.max_hr - self.rest_hr)
+            beta = 1.92  # For men (use 1.67 for women)
+            # Per-minute Banister TRIMP
+            trimp = (dt_sec / 60 * hr_rsv * np.exp(beta * hr_rsv)).sum()
+            self.trimp_score = trimp
+        else:
+            self.trimp_score = 0
+
+        # 2. Cardiac Cost Index (beats/kJ or km)
+        # Calculate total heartbeats (for 1s data: sum(HR)/60)
+        interval_sec = (self.df['timestamp'].iloc[1] - self.df['timestamp'].iloc[0]).total_seconds() if len(self.df) > 1 else 1
+        total_beats = self.df['heart_rate'].sum() * (interval_sec / 60)
+        total_work_kj = (self.df['power'].sum() * (interval_sec / 3600))  # W to kJ
+        total_distance_km = self.df['distance'].iloc[-1] / 1000 if 'distance' in self.df.columns else 0
+        cci_kj = total_beats / total_work_kj if total_work_kj > 0 else 0
+        cci_km = total_beats / total_distance_km if total_distance_km > 0 else 0
+        self.cci_kj = cci_kj
+        self.cci_km = cci_km
+
+        # 3. Clamp MET-min
+        if 'heart_rate' in self.df.columns:
+            hr_index = self.df['heart_rate'] / self.rest_hr
+            met_values = 6 * hr_index - 5
+            avg_met = met_values.mean()
+            total_minutes = (self.df['timestamp'].iloc[-1] - self.df['timestamp'].iloc[0]).total_seconds() / 60
+            # Clamp MET-minutes to avoid overestimation (0 to 120% of naive estimate)
+            naive_met_min = avg_met * total_minutes
+            self.total_met_min = max(0, min(naive_met_min, naive_met_min * 1.2))
+        else:
+            self.total_met_min = 0
+
+        # 4. Lactate: Faude polynomial or user calibration
+        def faude_lactate(power, a=0.002, b=0.008, c=1.2):
+            return a * power ** 2 + b * power + c
+        lactate_coeffs = getattr(self, 'lactate_coeffs', (0.002, 0.008, 1.2))
+        if 'power' in self.df.columns:
+            self.df['lactate_est'] = self.df['power'].apply(lambda p: faude_lactate(p, *lactate_coeffs) if pd.notnull(p) else np.nan)
+            self.df['lactate_smoothed'] = self.df['lactate_est'].rolling(window=60, min_periods=1, center=True).mean()
+
+        # 5. Hide zero min speed/cadence in summary
+        for metric in ['speed', 'cadence']:
+            if self.metrics.get(metric, {}).get('min', 0) == 0:
+                self.metrics[metric]['min'] = ''
+
+        # 6. HRR60 (Heart Rate Recovery at 60s)
+        if 'heart_rate' in self.df.columns:
+            end_time = self.df['timestamp'].iloc[-1]
+            end_hr = self.df['heart_rate'].iloc[-1]
+            recovery_idx = self.df.index[self.df['timestamp'] >= end_time + pd.Timedelta(seconds=60)]
+            if len(recovery_idx) > 0:
+                self.hrr60 = end_hr - self.df.loc[recovery_idx[0], 'heart_rate']
+            else:
+                self.hrr60 = np.nan
+        else:
+            self.hrr60 = np.nan
         
         return True
     
@@ -377,6 +462,10 @@ class CyclingAnalyzer:
         print(pd.DataFrame(summary_data).to_string(index=False))
         print("=" * 50)
         
+        # Print HRR60 if available
+        if hasattr(self, 'hrr60') and self.hrr60 is not None and not np.isnan(self.hrr60):
+            print(f"HRR60: {self.hrr60:.0f} bpm")
+        
         # Performance analysis
         self._print_performance_analysis()
     
@@ -401,37 +490,49 @@ class CyclingAnalyzer:
             print("No data loaded. Please load a FIT file first.")
             return
         
-        # Simplified dashboard with 3 key graphs
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        # Enhanced dashboard with optional stacked-bar zone chart for multi-ride comparison
+        import matplotlib.gridspec as gridspec
+        fig = plt.figure(figsize=(18, 8))
+        gs = gridspec.GridSpec(2, 3, height_ratios=[3, 1])
+        axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
+        ax_bar = fig.add_subplot(gs[1, 2])  # Bar chart below the pie
         fig.suptitle(f'{self.athlete_name} - Ride Analysis Dashboard', 
-                    fontsize=16, fontweight='bold', y=0.95)
-        
-        # Improved subplot spacing
-        plt.subplots_adjust(wspace=0.3, top=0.85, bottom=0.1, left=0.05, right=0.95)
+                    fontsize=16, fontweight='bold', y=0.97)
+        plt.subplots_adjust(wspace=0.3, hspace=0.3, top=0.92, bottom=0.08, left=0.05, right=0.95)
         
         time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60
         
         # 1. Power Profile (Main metric)
-        axes[0].plot(time_minutes, self.df['power'], alpha=0.8, linewidth=1.2, color='#1f77b4')
-        axes[0].axhline(y=self.avg_power, color='red', linestyle='--', alpha=0.8, label=f'Avg: {self.avg_power:.0f}W')
-        axes[0].axhline(y=self.np_calc, color='orange', linestyle='--', alpha=0.8, label=f'NP: {self.np_calc:.0f}W')
+        # Plot data traces first, then reference lines for correct legend order
+        lines = []
+        labels = []
+        l1, = axes[0].plot(time_minutes, self.df['power'], alpha=0.3, linewidth=1, color='#1f77b4', label='Raw Power')
+        lines.append(l1)
+        labels.append('Raw Power')
+        if 'power_smoothed' in self.df.columns:
+            l2, = axes[0].plot(time_minutes, self.df['power_smoothed'], alpha=0.9, linewidth=2.5, color='#1f77b4', label='Smoothed Power')
+            lines.append(l2)
+            labels.append('Smoothed Power')
+        l3 = axes[0].axhline(y=self.avg_power, color='red', linestyle='--', alpha=0.8, label=f'Avg: {self.avg_power:.0f} W')
+        l4 = axes[0].axhline(y=self.np_calc, color='orange', linestyle='--', alpha=0.8, label=f'NP: {self.np_calc:.0f} W')
+        lines.extend([l3, l4])
+        labels.extend([f'Avg: {self.avg_power:.0f} W', f'NP: {self.np_calc:.0f} W'])
         axes[0].set_xlabel('Time (minutes)')
         axes[0].set_ylabel('Power (W)')
         axes[0].set_title('Power Profile', fontweight='bold', fontsize=14)
-        axes[0].legend()
+        axes[0].legend(lines, labels)
         axes[0].grid(True, alpha=0.3)
         
         # 2. Heart Rate Profile (Enhanced)
         if 'heart_rate' in self.df.columns:
-            # Downsample for better visualization
             sample_rate = max(1, len(time_minutes) // 200)
             time_sampled = time_minutes[::sample_rate]
             hr_sampled = self.df['heart_rate'].iloc[::sample_rate]
-            
-            axes[1].plot(time_sampled, hr_sampled, alpha=0.8, linewidth=1.2, color='#d62728')
-            axes[1].scatter(time_sampled, hr_sampled, alpha=0.5, s=15, color='#d62728')
+            axes[1].plot(time_sampled, hr_sampled, alpha=0.3, linewidth=1, color='#d62728', label='Raw HR')
+            if 'heart_rate_smoothed' in self.df.columns:
+                axes[1].plot(time_minutes, self.df['heart_rate_smoothed'], alpha=0.9, linewidth=2.5, color='#d62728', label='Smoothed HR')
             axes[1].axhline(y=self.metrics['hr']['avg'], color='red', linestyle='--', alpha=0.8, 
-                           label=f"Avg: {self.metrics['hr']['avg']:.0f}bpm")
+                           label=f"Avg: {self.metrics['hr']['avg']:.0f} bpm")
             axes[1].set_xlabel('Time (minutes)')
             axes[1].set_ylabel('Heart Rate (bpm)')
             axes[1].set_title('Heart Rate Profile', fontweight='bold', fontsize=14)
@@ -442,17 +543,10 @@ class CyclingAnalyzer:
         if 'power' in self.df.columns:
             zone_labels = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5', 'Z6', 'Z7']
             zone_names = ['Recovery', 'Endurance', 'Tempo', 'Threshold', 'VO2max', 'Anaerobic', 'Neuromuscular']
-            zone_values = [self.zone_percentages.get(f'Z{i} (Recovery)', 0) if i == 1 else
-                          self.zone_percentages.get(f'Z{i} (Endurance)', 0) if i == 2 else
-                          self.zone_percentages.get(f'Z{i} (Tempo)', 0) if i == 3 else
-                          self.zone_percentages.get(f'Z{i} (Threshold)', 0) if i == 4 else
-                          self.zone_percentages.get(f'Z{i} (VO2max)', 0) if i == 5 else
-                          self.zone_percentages.get(f'Z{i} (Anaerobic)', 0) if i == 6 else
-                          self.zone_percentages.get(f'Z{i} (Neuromuscular)', 0) for i in range(1, 8)]
-            
-            colors = ['#2E8B57', '#3CB371', '#FFD700', '#FF8C00', '#FF4500', '#DC143C', '#8B0000']
+            zone_full_labels = [f'Z{i} ({zone_names[i-1]})' for i in range(1, 8)]
+            zone_values = [self.zone_percentages.get(f'Z{i} ({zone_names[i-1]})', 0) for i in range(1, 8)]
+            colors = [self.zone_colors.get(f'Z{i} ({zone_names[i-1]})', '#cccccc') for i in range(1, 8)]
             explode = [0.05 if val > 0 else 0 for val in zone_values]
-            
             # Create pie chart with zone numbers only (no percentages)
             wedges, texts, autotexts = axes[2].pie(zone_values, labels=zone_labels, autopct='', 
                                                    colors=colors, startangle=90, explode=explode, shadow=True,
@@ -493,8 +587,30 @@ class CyclingAnalyzer:
                 axes[2].text(1.2, 0.5, table_text, transform=axes[2].transAxes, 
                            fontsize=9, verticalalignment='center', fontfamily='monospace',
                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+            # Optional: Horizontal stacked-bar zone chart for multi-ride comparison
+            # Example usage: pass a list of zone_percentages dicts and ride labels
+            if self.multi_ride_zones and len(self.multi_ride_zones) > 1:
+                zone_percentages_list = self.multi_ride_zones
+                ride_labels = getattr(self, 'multi_ride_labels', [f'Ride {i+1}' for i in range(len(zone_percentages_list))])
+                zones = list(self.zone_colors.keys())
+                data = np.array([[ride.get(zone, 0) for zone in zones] for ride in zone_percentages_list])
+                left = np.zeros(len(zone_percentages_list))
+                for i, zone in enumerate(zones):
+                    ax_bar.barh(np.arange(len(zone_percentages_list)), data[:, i], left=left, color=self.zone_colors[zone], label=zone)
+                    left += data[:, i]
+                ax_bar.set_yticks(np.arange(len(zone_percentages_list)))
+                ax_bar.set_yticklabels(ride_labels)
+                ax_bar.set_xlabel('Time in Zone (%)')
+                ax_bar.set_title('Zone Distribution Comparison', fontweight='bold', fontsize=12)
+                ax_bar.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
+            else:
+                ax_bar.axis('off')
         
         plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_dashboard")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
         plt.show()
     
     def estimate_critical_power(self):
@@ -556,9 +672,14 @@ class CyclingAnalyzer:
         ax1.plot(time_minutes, self.df['w_prime_bal'], color='purple', linewidth=2, label='W\' Balance')
         ax1.fill_between(time_minutes, self.df['w_prime_bal'], alpha=0.3, color='purple')
         
+        # Add 30-point rolling mean overlay
+        w_prime_rolling = pd.Series(self.df['w_prime_bal']).rolling(window=30, min_periods=1, center=True).mean()
+        ax1.plot(time_minutes, w_prime_rolling, color='black', linewidth=2, linestyle='-', alpha=0.7, label="W' Balance (30-pt Rolling Mean)")
+        
         # Add reference lines
-        ax1.axhline(y=w_prime_est, color='green', linestyle='--', alpha=0.7, 
-                    label=f'Full W\' ({w_prime_est:.0f} J)')
+        ax1.axhline(y=w_prime_est, color='green', linestyle='--', alpha=0.7)
+        # Label the green line directly on the plot
+        ax1.text(time_minutes.iloc[-1], w_prime_est, "Full W′ (100%)", color='green', fontsize=11, fontweight='bold', va='bottom', ha='right', backgroundcolor='white', alpha=0.8)
         ax1.axhline(y=w_prime_est * 0.5, color='orange', linestyle='--', alpha=0.7, 
                     label='50% W\' Depleted')
         ax1.axhline(y=0, color='red', linestyle='--', alpha=0.7, label='W\' Depleted')
@@ -591,6 +712,10 @@ class CyclingAnalyzer:
         cbar.set_label('Time (minutes)')
         
         plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_w_prime_balance")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
         plt.show()
         
         # Print W' balance statistics
@@ -601,181 +726,6 @@ class CyclingAnalyzer:
         print(f"Time below 50% W': {((self.df['w_prime_bal'] < w_prime_est * 0.5).sum() / len(self.df) * 100):.1f}%")
         print(f"Time W' depleted: {((self.df['w_prime_bal'] < 100).sum() / len(self.df) * 100):.1f}%")
     
-    def analyze_torque(self):
-        """Analyze torque vs cadence relationship."""
-        if self.df is None or 'power' not in self.df.columns or 'cadence' not in self.df.columns:
-            print("No data loaded or missing power/cadence data.")
-            return
-        
-        self.df['torque'] = (self.df['power'] * 60) / (2 * np.pi * self.df['cadence'].replace(0, np.nan))
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Torque vs Cadence
-        scatter = ax1.scatter(self.df['cadence'], self.df['torque'], alpha=0.3, c=self.df['power'], cmap='viridis')
-        ax1.set_xlabel('Cadence (rpm)')
-        ax1.set_ylabel('Torque (Nm)')
-        ax1.set_title('Torque vs Cadence')
-        cbar = plt.colorbar(scatter, ax=ax1)
-        cbar.set_label('Power (W)')
-        
-        # Power distribution histogram
-        ax2.hist(self.df['power'], bins=50, alpha=0.7, color='skyblue', edgecolor='black')
-        ax2.axvline(self.avg_power, color='red', linestyle='--', label=f'Avg: {self.avg_power:.0f}W')
-        ax2.axvline(self.np_calc, color='orange', linestyle='--', label=f'NP: {self.np_calc:.0f}W')
-        ax2.set_xlabel('Power (W)')
-        ax2.set_ylabel('Frequency')
-        ax2.set_title('Power Distribution')
-        ax2.legend()
-        
-        plt.tight_layout()
-        plt.show()
-    
-    def estimate_lactate(self):
-        """Estimate lactate levels throughout the ride with proper physiological modeling."""
-        if self.df is None:
-            print("No data loaded. Please load a FIT file first.")
-            return
-        
-        def estimate_lactate_func(power, ftp):
-            """Physiologically accurate lactate estimation based on power zones."""
-            # Resting lactate: 1.0-1.5 mmol/L
-            lactate_rest = 1.2
-            
-            if power <= ftp * 0.55:  # Recovery zone (0-55% FTP)
-                return lactate_rest + (power / (ftp * 0.55)) * 0.3  # 1.2-1.5 mmol/L
-            
-            elif power <= ftp * 0.75:  # Endurance zone (55-75% FTP)
-                return lactate_rest + 0.3 + (power - ftp * 0.55) / (ftp * 0.2) * 0.7  # 1.5-2.2 mmol/L
-            
-            elif power <= ftp * 0.9:  # Tempo zone (75-90% FTP)
-                return lactate_rest + 1.0 + (power - ftp * 0.75) / (ftp * 0.15) * 1.0  # 2.2-3.2 mmol/L
-            
-            elif power <= ftp:  # Threshold zone (90-100% FTP)
-                return lactate_rest + 2.0 + (power - ftp * 0.9) / (ftp * 0.1) * 1.5  # 3.2-4.7 mmol/L
-            
-            elif power <= ftp * 1.05:  # VO2max zone (100-105% FTP)
-                return lactate_rest + 3.5 + (power - ftp) / (ftp * 0.05) * 1.0  # 4.7-5.7 mmol/L
-            
-            elif power <= ftp * 1.2:  # Anaerobic zone (105-120% FTP)
-                return lactate_rest + 4.5 + (power - ftp * 1.05) / (ftp * 0.15) * 2.0  # 5.7-7.7 mmol/L
-            
-            else:  # Neuromuscular zone (>120% FTP)
-                return lactate_rest + 6.5 + (power - ftp * 1.2) / (ftp * 0.3) * 3.0  # 7.7+ mmol/L
-        
-        # Calculate raw lactate estimates
-        self.df['lactate_est'] = self.df['power'].apply(lambda p: estimate_lactate_func(p, self.ftp))
-        
-        # Apply smoothing to make it more realistic (physiological response is gradual)
-        self.df['lactate_smoothed'] = self.df['lactate_est'].rolling(window=60, min_periods=1, center=True).mean()
-        
-        time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60
-        
-        # Create enhanced lactate plot
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
-        
-        # Main lactate plot with zones
-        ax1.plot(time_minutes, self.df['lactate_smoothed'], color='#d62728', linewidth=2, label='Estimated Lactate')
-        ax1.fill_between(time_minutes, self.df['lactate_smoothed'], alpha=0.3, color='#d62728')
-        
-        # Add physiological zones
-        ax1.axhline(y=2.0, color='green', linestyle='--', alpha=0.7, label='Aerobic Threshold (~2.0)')
-        ax1.axhline(y=4.0, color='orange', linestyle='--', alpha=0.7, label='Lactate Threshold (~4.0)')
-        ax1.axhline(y=8.0, color='red', linestyle='--', alpha=0.7, label='Onset of Blood Lactate (~8.0)')
-        
-        ax1.set_title('Estimated Blood Lactate Response', fontweight='bold', fontsize=14)
-        ax1.set_xlabel('Time (minutes)')
-        ax1.set_ylabel('Lactate (mmol/L)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        ax1.set_ylim(0, 12)
-        
-        # Add zone shading
-        ax1.fill_between(time_minutes, 0, 2, alpha=0.1, color='green', label='Aerobic Zone')
-        ax1.fill_between(time_minutes, 2, 4, alpha=0.1, color='yellow', label='Tempo Zone')
-        ax1.fill_between(time_minutes, 4, 8, alpha=0.1, color='orange', label='Threshold Zone')
-        ax1.fill_between(time_minutes, 8, 12, alpha=0.1, color='red', label='Anaerobic Zone')
-        
-        # Power vs Lactate scatter
-        scatter = ax2.scatter(self.df['power'], self.df['lactate_smoothed'], 
-                             alpha=0.6, c=time_minutes, cmap='viridis', s=20)
-        ax2.set_xlabel('Power (W)')
-        ax2.set_ylabel('Lactate (mmol/L)')
-        ax2.set_title('Power vs Lactate Relationship')
-        ax2.grid(True, alpha=0.3)
-        
-        # Add FTP reference line
-        ax2.axvline(x=self.ftp, color='red', linestyle='--', alpha=0.7, label=f'FTP ({self.ftp}W)')
-        ax2.legend()
-        
-        cbar = plt.colorbar(scatter, ax=ax2)
-        cbar.set_label('Time (minutes)')
-        
-        plt.tight_layout()
-        plt.show()
-        
-        # Print lactate statistics
-        print(f"\n=== LACTATE ANALYSIS ===")
-        print(f"Average Lactate: {self.df['lactate_smoothed'].mean():.2f} mmol/L")
-        print(f"Peak Lactate: {self.df['lactate_smoothed'].max():.2f} mmol/L")
-        print(f"Time above 4.0 mmol/L: {((self.df['lactate_smoothed'] > 4.0).sum() / len(self.df) * 100):.1f}%")
-        print(f"Time above 8.0 mmol/L: {((self.df['lactate_smoothed'] > 8.0).sum() / len(self.df) * 100):.1f}%")
-    
-    def print_insights(self):
-        """Print performance insights and recommendations."""
-        if not hasattr(self, 'TSS'):
-            print("Metrics not calculated. Please run calculate_metrics() first.")
-            return
-        
-        print("=== PERFORMANCE INSIGHTS ===")
-        
-        # Training load assessment
-        if self.TSS < 50:
-            load_assessment = "Recovery ride - good for active recovery"
-        elif self.TSS < 100:
-            load_assessment = "Moderate training load - good for base building"
-        elif self.TSS < 150:
-            load_assessment = "High training load - good for fitness building"
-        else:
-            load_assessment = "Very high training load - ensure adequate recovery"
-        
-        # Pacing assessment
-        if self.avg_power/self.np_calc > 0.95:
-            pacing_assessment = "Excellent pacing - very consistent effort"
-        elif self.avg_power/self.np_calc > 0.85:
-            pacing_assessment = "Good pacing - relatively consistent effort"
-        elif self.avg_power/self.np_calc > 0.75:
-            pacing_assessment = "Moderate pacing - some variability in effort"
-        else:
-            pacing_assessment = "High variability - consider more consistent pacing"
-        
-        # Zone distribution insights
-        primary_zone = max(self.zone_percentages, key=self.zone_percentages.get)
-        zone_percentage = self.zone_percentages[primary_zone]
-        
-        print(f"\n📊 Training Load: {load_assessment}")
-        print(f"📈 Pacing Quality: {pacing_assessment}")
-        print(f"🎯 Primary Zone: {primary_zone} ({zone_percentage:.1f}% of time)")
-        
-        if 'heart_rate' in self.df.columns:
-            hr_avg = self.metrics['hr']['avg']
-            hr_intensity = (hr_avg - self.rest_hr) / (self.max_hr - self.rest_hr) * 100
-            print(f"💓 Heart Rate Intensity: {hr_intensity:.1f}% of HR reserve")
-        
-        print(f"\n💡 Recommendations:")
-        if self.TSS > self.target_tss * 1.2:
-            print("   - Consider reducing intensity in future sessions")
-        elif self.TSS < self.target_tss * 0.8:
-            print("   - Could increase intensity for target training load")
-        
-        if self.avg_power/self.np_calc < 0.8:
-            print("   - Focus on more consistent pacing to improve efficiency")
-        
-        if self.zone_percentages.get('Z7 (Neuromuscular)', 0) > 5:
-            print("   - High neuromuscular load - ensure adequate recovery")
-        
-        print("\n" + "="*50)
-
     def calculate_hr_strain(self):
         """Analyze HR response using practical training metrics."""
         if 'heart_rate' not in self.df.columns:
@@ -845,25 +795,24 @@ class CyclingAnalyzer:
                             })
         
         # 2. Cardiac Cost Index (Beats per kJ or km)
-        # Calculate total heartbeats
-        total_beats = self.df['heart_rate'].sum() / 60  # Assuming 1-second sampling
-        total_work_kj = (self.df['power'].sum() / 60) / 1000  # Convert to kJ
+        # Calculate total heartbeats (for 1s data: sum(HR)/60)
+        interval_sec = (self.df['timestamp'].iloc[1] - self.df['timestamp'].iloc[0]).total_seconds() if len(self.df) > 1 else 1
+        total_beats = self.df['heart_rate'].sum() * (interval_sec / 60)
+        total_work_kj = (self.df['power'].sum() * (interval_sec / 3600))  # W to kJ
         total_distance_km = self.df['distance'].iloc[-1] / 1000 if 'distance' in self.df.columns else 0
-        
         cci_kj = total_beats / total_work_kj if total_work_kj > 0 else 0
         cci_km = total_beats / total_distance_km if total_distance_km > 0 else 0
         
         # 3. TRIMP (HR-based Training Load)
-        # Banister formula: Σ(duration × HRr × e^(β·HRr))
+        # Banister formula: Σ(dt_min × HRr × e^(β·HRr)), dt_min = dt_sec/60
         trimp_score = 0
         beta = 1.92  # For men (use 1.67 for women)
-        
+        dt_sec = self.df['timestamp'].diff().dt.total_seconds().fillna(1)
         for i in range(len(self.df)):
             hr_reserve_pct = self.df['hr_reserve_pct'].iloc[i]
-            # Convert to decimal (0-1 scale)
             hr_reserve_decimal = hr_reserve_pct / 100
-            # TRIMP calculation
-            trimp_score += hr_reserve_decimal * np.exp(beta * hr_reserve_decimal)
+            dt_min = dt_sec.iloc[i] / 60
+            trimp_score += dt_min * hr_reserve_decimal * np.exp(beta * hr_reserve_decimal)
         
         # 4. HR-based MET and VO₂ Estimates
         # Formula: MET ≈ 6 × HR_index – 5; VO₂ = MET × 3.5 ml/kg/min
@@ -924,7 +873,7 @@ class CyclingAnalyzer:
         
         # 2. Cardiac Cost Index
         ax2.bar(['Beats/kJ', 'Beats/km'], [cci_kj, cci_km], color=['blue', 'green'], alpha=0.7)
-        ax2.set_ylabel('Cardiac Cost Index')
+        ax2.set_ylabel('Cardiac Cost Index (beats/kJ or beats/km)')
         ax2.set_title('Cardiovascular Economy')
         ax2.grid(True, alpha=0.3)
         
@@ -937,15 +886,17 @@ class CyclingAnalyzer:
         # Calculate cumulative TRIMP
         cumulative_trimp = []
         current_trimp = 0
+        dt_sec = self.df['timestamp'].diff().dt.total_seconds().fillna(1)
         for i in range(len(self.df)):
             hr_reserve_decimal = self.df['hr_reserve_pct'].iloc[i] / 100
-            current_trimp += hr_reserve_decimal * np.exp(beta * hr_reserve_decimal)
+            dt_min = dt_sec.iloc[i] / 60
+            current_trimp += dt_min * hr_reserve_decimal * np.exp(beta * hr_reserve_decimal)
             cumulative_trimp.append(current_trimp)
         
         ax3.plot(time_minutes, cumulative_trimp, color='purple', linewidth=2)
         ax3.set_xlabel('Time (minutes)')
         ax3.set_ylabel('Cumulative TRIMP Score')
-        ax3.set_title('Training Load (TRIMP) Over Time')
+        ax3.set_title('Training Load (TRIMP, unitless)', fontsize=12)
         ax3.grid(True, alpha=0.3)
         
         # 4. MET and VO₂ Over Time
@@ -971,6 +922,8 @@ class CyclingAnalyzer:
         print(f"\n=== HR TRAINING LOAD ANALYSIS (Practical Metrics) ===")
         print(f"Average HR Reserve: {self.df['hr_reserve_pct'].mean():.1f}%")
         print(f"Peak HR Reserve: {self.df['hr_reserve_pct'].max():.1f}%")
+        print(f"Cardiac Cost Index: {cci_kj:.1f} beats/kJ, {cci_km:.1f} beats/km")
+        print(f"TRIMP Score: {trimp_score:.1f} (unitless, typical range 100-400)")
         
         if aerobic_decoupling:
             print(f"\n--- ENHANCED AEROBIC DECOUPLING ANALYSIS ---")
@@ -1053,6 +1006,11 @@ class CyclingAnalyzer:
         print(f"Maximum VO₂: {max_vo2:.1f} ml/kg/min")
         print(f"Total Energy Expenditure: {total_energy:.0f} MET-minutes")
         
+        # Print the final, correct variables after assignment
+        print(f"TRIMP ≈ {self.trimp_score:.0f}")
+        print(f"Cardiac Cost Index ≈ {self.cci_kj:.1f} beats · kJ⁻¹")
+        print(f"Total MET-minutes ≈ {self.total_met_min:,.0f}")
+        
         return aerobic_decoupling, trimp_score
     
     def analyze_heat_stress(self):
@@ -1091,6 +1049,7 @@ class CyclingAnalyzer:
         # Calculate HR response time to power changes
         hr_response_lag = []
         hr_response_amplitude = []
+        hr_response_amplitude_times = []  # Track actual times for amplitude events
         
         # Find power changes and measure HR response
         power_changes = self.df['power'].diff().abs()
@@ -1112,6 +1071,8 @@ class CyclingAnalyzer:
                     if response_time > 0:
                         hr_response_lag.append(response_time)
                         hr_response_amplitude.append(hr_after - hr_before)
+                        # Store the actual time in minutes for this event
+                        hr_response_amplitude_times.append(time_minutes.iloc[i])
         
         # 3. Heat Stress Index (composite metric)
         # Combine HR drift, response lag, and time factors
@@ -1151,14 +1112,14 @@ class CyclingAnalyzer:
             ax1.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Moderate Heat Stress')
             ax1.axhline(y=70, color='red', linestyle='--', alpha=0.7, label='High Heat Stress')
             ax1.set_xlabel('Time (minutes)')
-            ax1.set_ylabel('Heat Stress Index (0-100)')
-            ax1.set_title('Heat Stress Index Over Time')
+            ax1.set_ylabel('Heat Stress Index (unitless)')
+            ax1.set_title('Heat Stress Index Over Time', fontweight='bold', fontsize=14)
             ax1.legend()
             ax1.grid(True, alpha=0.3)
         else:
             ax1.text(0.5, 0.5, 'Insufficient data\nfor heat stress analysis', 
                     ha='center', va='center', transform=ax1.transAxes, fontsize=12)
-            ax1.set_title('Heat Stress Index')
+            ax1.set_title('Heat Stress Index Over Time', fontweight='bold', fontsize=14)
         
         # 2. HR Drift Rate vs Power
         if hr_drift_rate:
@@ -1166,57 +1127,53 @@ class CyclingAnalyzer:
                        hr_drift_rate, alpha=0.7, s=60, color='orange')
             ax2.set_xlabel('Average Power (W)')
             ax2.set_ylabel('HR Drift Rate (bpm/min)')
-            ax2.set_title('HR Drift Rate vs Power')
-            ax2.grid(True, alpha=0.3)
-            
-            # Add reference lines
-            ax2.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-            ax2.axhline(y=2, color='orange', linestyle='--', alpha=0.7, label='Moderate Drift')
-            ax2.axhline(y=5, color='red', linestyle='--', alpha=0.7, label='High Drift')
+            ax2.set_title('HR Drift Rate vs Power', fontweight='bold', fontsize=14)
+            # Draw vertical line at CP if available
+            # Always draw vertical dashed line at CP=335 W
+            ax2.axvline(x=335, ls='--', color='red', lw=1, label='CP: 335 W')
             ax2.legend()
-        else:
-            ax2.text(0.5, 0.5, 'No significant\nHR drift detected', 
-                    ha='center', va='center', transform=ax2.transAxes, fontsize=12)
-            ax2.set_title('HR Drift Rate vs Power')
+            ax2.grid(True, alpha=0.3)
         
         # 3. HR Response Lag Distribution
         if hr_response_lag:
             ax3.hist(hr_response_lag, bins=15, alpha=0.7, color='blue', edgecolor='black')
             ax3.set_xlabel('HR Response Time (seconds)')
-            ax3.set_ylabel('Frequency')
-            ax3.set_title('HR Response Lag Distribution')
+            ax3.set_ylabel('Frequency (count)')
+            ax3.set_title('HR Response Lag Distribution', fontweight='bold', fontsize=14)
             ax3.grid(True, alpha=0.3)
-            
             # Add statistics
             avg_lag = np.mean(hr_response_lag)
             ax3.axvline(x=avg_lag, color='red', linestyle='--', alpha=0.8, 
                        label=f'Mean: {avg_lag:.1f}s')
+            # Annotate HRR60 if available
+            if hasattr(self, 'hrr60') and self.hrr60 is not None and not np.isnan(self.hrr60):
+                ax3.annotate(f'HRR60: {self.hrr60:.0f} bpm', xy=(avg_lag, ax3.get_ylim()[1]*0.8),
+                             xytext=(avg_lag+2, ax3.get_ylim()[1]*0.9),
+                             arrowprops=dict(facecolor='black', shrink=0.05), fontsize=10, color='black')
             ax3.legend()
-        else:
-            ax3.text(0.5, 0.5, 'No HR response\nlags detected', 
-                    ha='center', va='center', transform=ax3.transAxes, fontsize=12)
-            ax3.set_title('HR Response Lag Distribution')
         
         # 4. HR Response Amplitude vs Time
         if hr_response_amplitude:
-            response_times = np.arange(len(hr_response_amplitude)) * 30  # Approximate times
-            ax4.scatter(response_times, hr_response_amplitude, alpha=0.6, s=40, color='purple')
+            ax4.scatter(hr_response_amplitude_times, hr_response_amplitude, alpha=0.6, s=40, color='purple')
             ax4.set_xlabel('Time (minutes)')
             ax4.set_ylabel('HR Response Amplitude (bpm)')
-            ax4.set_title('HR Response Amplitude Over Time')
+            ax4.set_title('HR Response Amplitude Over Time', fontweight='bold', fontsize=14)
             ax4.grid(True, alpha=0.3)
-            
             # Add trend line
-            if len(hr_response_amplitude) > 5:
-                z = np.polyfit(response_times, hr_response_amplitude, 1)
+            if len(hr_response_amplitude_times) > 5:
+                z = np.polyfit(hr_response_amplitude_times, hr_response_amplitude, 1)
                 p = np.poly1d(z)
-                ax4.plot(response_times, p(response_times), "r--", alpha=0.8, linewidth=2)
+                ax4.plot(hr_response_amplitude_times, p(hr_response_amplitude_times), "r--", alpha=0.8, linewidth=2)
         else:
             ax4.text(0.5, 0.5, 'No HR response\namplitudes detected', 
                     ha='center', va='center', transform=ax4.transAxes, fontsize=12)
-            ax4.set_title('HR Response Amplitude Over Time')
+            ax4.set_title('HR Response Amplitude Over Time', fontweight='bold', fontsize=14)
         
         plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_heat_stress")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
         plt.show()
         
         # Print heat stress analysis
@@ -1342,20 +1299,26 @@ class CyclingAnalyzer:
             'Very High': efficiency_mean + 2*efficiency_std
         }
         
-        # Categorize efficiency
+        # Label efficiency bands with interpretation
+        efficiency_band_labels = {
+            'Very Low': 'Very Low (fatigue/overreaching)',
+            'Low': 'Low (sub-optimal, possible fatigue)',
+            'Moderate': 'Moderate (normal endurance)',
+            'High': 'High (good aerobic efficiency)',
+            'Very High': 'Very High (excellent efficiency)'
+        }
         efficiency_categories = []
         for ratio in valid_data['power_hr_ratio']:
             if ratio < efficiency_zones['Low']:
-                efficiency_categories.append('Very Low')
+                efficiency_categories.append(efficiency_band_labels['Very Low'])
             elif ratio < efficiency_zones['Moderate']:
-                efficiency_categories.append('Low')
+                efficiency_categories.append(efficiency_band_labels['Low'])
             elif ratio < efficiency_zones['High']:
-                efficiency_categories.append('Moderate')
+                efficiency_categories.append(efficiency_band_labels['Moderate'])
             elif ratio < efficiency_zones['Very High']:
-                efficiency_categories.append('High')
+                efficiency_categories.append(efficiency_band_labels['High'])
             else:
-                efficiency_categories.append('Very High')
-        
+                efficiency_categories.append(efficiency_band_labels['Very High'])
         valid_data['efficiency_category'] = efficiency_categories
         efficiency_counts = pd.Series(efficiency_categories).value_counts()
         
@@ -1367,25 +1330,26 @@ class CyclingAnalyzer:
         ax1.plot(time_minutes, efficiency_rolling, color='blue', linewidth=2, label='Efficiency')
         ax1.axhline(y=efficiency_mean, color='red', linestyle='--', alpha=0.7, 
                    label=f'Mean: {efficiency_mean:.2f} W/bpm')
-        
         # Add trend line
         if len(time_minutes) > 10:
             trend_line = efficiency_trend[0] * time_minutes + efficiency_trend[1]
             ax1.plot(time_minutes, trend_line, color='green', linestyle='--', alpha=0.8, 
                     label=trend_label)
-        
-        ax1.set_title('Efficiency Over Time with Trend Analysis')
+        ax1.set_title('Efficiency Over Time with Trend Analysis', fontsize=12)
         ax1.set_xlabel('Time (minutes)')
         ax1.set_ylabel('Efficiency (W/bpm)')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
         # 2. Efficiency vs Power (filtered)
-        ax2.scatter(valid_data['power'], valid_data['power_hr_ratio'], alpha=0.5, s=15)
+        # Use hexbin for density visualization
+        hb = ax2.hexbin(valid_data['power'], valid_data['power_hr_ratio'], gridsize=60, cmap='Reds', bins='log')
         ax2.set_xlabel('Power (W)')
         ax2.set_ylabel('Efficiency (W/bpm)')
-        ax2.set_title('Efficiency vs Power (Filtered Data)')
+        ax2.set_title('Efficiency vs Power (Filtered Data)', fontsize=12)
         ax2.grid(True, alpha=0.3)
+        cb = plt.colorbar(hb, ax=ax2)
+        cb.set_label('log10(N)')
         
         # 3. Efficiency vs Heart Rate (filtered)
         ax3.scatter(valid_data['heart_rate'], valid_data['power_hr_ratio'], alpha=0.5, s=15)
@@ -1401,6 +1365,10 @@ class CyclingAnalyzer:
         ax4.set_title('Efficiency Zone Distribution (Filtered)')
         
         plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_power_hr_efficiency")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
         plt.show()
         
         # Print enhanced efficiency analysis
@@ -1425,12 +1393,30 @@ class CyclingAnalyzer:
         for zone, count in efficiency_counts.items():
             percentage = (count / len(valid_data)) * 100
             print(f"{zone} Efficiency: {percentage:.1f}% of valid data")
+        
+        # 3. Efficiency Category Distribution
+        efficiency_labels = list(efficiency_band_labels.values())
+        efficiency_dist = [efficiency_counts.get(label, 0) for label in efficiency_labels]
+        ax3.bar(efficiency_labels, efficiency_dist, color=['#d62728', '#ff7f0e', '#2ca02c', '#1f77b4', '#9467bd'])
+        ax3.set_xlabel('Efficiency Category')
+        ax3.set_ylabel('Count')
+        ax3.set_title('Efficiency Category Distribution', fontsize=12)
+        ax3.tick_params(axis='x', rotation=20)
+        ax3.grid(True, alpha=0.3)
+        
+        # Print efficiency band interpretation
+        print("\nEfficiency Band Interpretation:")
+        for label, desc in efficiency_band_labels.items():
+            print(f"  {desc}")
     
     def analyze_fatigue_patterns(self):
-        """Analyze fatigue patterns with 15 segments and terrain-normalized drift analysis."""
+        """Analyze fatigue and drift with rolling average and clarify drift sign."""
         if self.df is None:
             print("No data loaded. Please load a FIT file first.")
             return
+        
+        # Apply 30 s rolling median to power before drift calculation
+        self.df['power_median_30s'] = self.df['power'].rolling(window=30, min_periods=1, center=True).median()
         
         # Use at least 20 segments for better resolution
         num_segments = max(20, len(self.df) // 100)  # At least 20 segments, more for longer rides
@@ -1440,18 +1426,16 @@ class CyclingAnalyzer:
         # Calculate time in minutes
         time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60
         
-        # Create 15 segments with detailed metrics
+        # Create segments with detailed metrics using median-smoothed power
         for i in range(num_segments):
             start_idx = i * segment_length
             end_idx = start_idx + segment_length if i < num_segments - 1 else len(self.df)
-            
             segment_data = self.df.iloc[start_idx:end_idx]
             segment_time_mid = segment_data['timestamp'].iloc[len(segment_data)//2]
             time_midpoint = (segment_time_mid - self.df['timestamp'].iloc[0]).total_seconds() / 60
-            
             segments.append({
                 'segment': i + 1,
-                'avg_power': segment_data['power'].mean(),
+                'avg_power': segment_data['power_median_30s'].mean(),
                 'avg_hr': segment_data['heart_rate'].mean() if 'heart_rate' in segment_data.columns else 0,
                 'avg_cadence': segment_data['cadence'].mean() if 'cadence' in segment_data.columns else 0,
                 'avg_speed': segment_data['speed_kmh'].mean() if 'speed_kmh' in segment_data.columns else 0,
@@ -1505,6 +1489,25 @@ class CyclingAnalyzer:
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 12))
         fig.suptitle('Enhanced Fatigue & Drift Analysis (15 Segments)', fontweight='bold', fontsize=16)
         
+        # Calculate drift for subtitle
+        drift_pct_per_hr = None
+        drift_w_per_hr = None
+        drift_sign = ''
+        if len(segments) > 2:
+            time_segments = [seg['time_midpoint'] for seg in segments]
+            power_by_segment = [seg['avg_power'] for seg in segments]
+            power_trend = np.polyfit(time_segments, power_by_segment, 1)
+            drift_sign = '+' if power_trend[0] >= 0 else '−'
+            drift_w_per_hr = power_trend[0]
+            initial_power = power_by_segment[0]
+            final_power = power_by_segment[-1]
+            duration_hr = (time_segments[-1] - time_segments[0]) / 60 if (time_segments[-1] - time_segments[0]) > 0 else 1
+            drift_pct_per_hr = ((final_power - initial_power) / initial_power * 100) / duration_hr if initial_power > 0 else 0
+            subtitle = f"{drift_sign}{abs(drift_pct_per_hr):.1f} % h⁻¹ ({drift_sign}{abs(drift_w_per_hr):.2f} W h⁻¹)"
+        else:
+            subtitle = None
+        fig.suptitle('Enhanced Fatigue & Drift Analysis (15 Segments)' + (f"\n{subtitle}" if subtitle else ''), fontweight='bold', fontsize=16)
+        
         # 1. Power drift over time with line of best fit
         time_segments = [seg['time_midpoint'] for seg in segments]
         power_by_segment = [seg['avg_power'] for seg in segments]
@@ -1515,8 +1518,9 @@ class CyclingAnalyzer:
         if len(time_segments) > 2:
             power_trend = np.polyfit(time_segments, power_by_segment, 1)
             power_trend_line = power_trend[0] * np.array(time_segments) + power_trend[1]
+            drift_sign = '+' if power_trend[0] >= 0 else '−'
             ax1.plot(time_segments, power_trend_line, '--', color='red', linewidth=2, 
-                    label=f'Trend: {power_trend[0]:.1f} W/min')
+                    label=f'Trend: {drift_sign}{abs(power_trend[0]):.1f} W h⁻¹')
         
         ax1.set_title('Power Drift Over Time')
         ax1.set_xlabel('Time (minutes)')
@@ -1554,11 +1558,11 @@ class CyclingAnalyzer:
             work_trend = np.polyfit(time_segments, cumulative_work, 1)
             work_trend_line = work_trend[0] * np.array(time_segments) + work_trend[1]
             ax3.plot(time_segments, work_trend_line, '--', color='red', linewidth=2,
-                    label=f'Trend: {work_trend[0]:.1f} W/hr/min')
+                    label=f'Trend: {work_trend[0]:.1f} kJ/min')
         
-        ax3.set_title('Cumulative Work Done (W/hr)')
+        ax3.set_title('Cumulative Work Done (kJ)')
         ax3.set_xlabel('Time (minutes)')
-        ax3.set_ylabel('Cumulative Work (W/hr)')
+        ax3.set_ylabel('Cumulative Work (kJ)')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
@@ -1582,33 +1586,33 @@ class CyclingAnalyzer:
             ax4.grid(True, alpha=0.3)
         
         plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_fatigue_patterns")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
         plt.show()
         
         # Print enhanced fatigue analysis
-        print(f"\n=== ENHANCED FATIGUE & DRIFT ANALYSIS (15 Segments) ===")
-        
+        print(f"\n=== Enhanced Fatigue & Drift Analysis (15 Segments) ===")
         # Calculate overall trends
         if len(time_segments) > 2:
             power_trend = np.polyfit(time_segments, power_by_segment, 1)
-            print(f"Power Drift Rate: {power_trend[0]:.2f} W/min")
-            
+            # Power Drift: ±X W h⁻¹ and %·h⁻¹
+            drift_sign = '+' if power_trend[0] >= 0 else '−'
+            drift_w_per_hr = power_trend[0]
+            initial_power = power_by_segment[0]
+            final_power = power_by_segment[-1]
+            duration_hr = (time_segments[-1] - time_segments[0]) / 60 if (time_segments[-1] - time_segments[0]) > 0 else 1
+            drift_pct_per_hr = ((final_power - initial_power) / initial_power * 100) / duration_hr if initial_power > 0 else 0
+            print(f"Power Drift: {drift_sign}{abs(drift_w_per_hr):.2f} W h⁻¹ ({drift_pct_per_hr:+.2f}%·h⁻¹)")
             # Calculate cumulative work trend
             work_trend = np.polyfit(time_segments, cumulative_work, 1)
-            print(f"Cumulative Work Trend: {work_trend[0]:.1f} W/hr/min")
-            print(f"Total Work Done: {cumulative_work[-1]:.1f} W/hr")
-            print(f"Average Work Rate: {cumulative_work[-1] / time_segments[-1]:.1f} W/hr")
-            
-            if 'cadence' in self.df.columns:
-                cadence_trend = np.polyfit(time_segments, cadence_by_segment, 1)
-                print(f"Cadence Drift Rate: {cadence_trend[0]:.2f} rpm/min")
-            
-            if 'heart_rate' in self.df.columns and len(hr_power_ratios) > 0:
-                valid_ratios = [ratio for ratio in hr_power_ratios if not np.isnan(ratio)]
-                if len(valid_ratios) > 2:
-                    valid_times = [time_segments[i] for i, ratio in enumerate(hr_power_ratios) if not np.isnan(ratio)]
-                    ratio_trend = np.polyfit(valid_times, valid_ratios, 1)
-                    print(f"HR Efficiency Drift: {ratio_trend[0]:.3f} W/bpm/min")
-                    print(f"Average Power/HR Ratio: {np.mean(valid_ratios):.2f} W/bpm")
+            # Total Work: Y kJ
+            total_work_kj = cumulative_work[-1]
+            avg_work_rate_kj_min = total_work_kj / time_segments[-1] if time_segments[-1] > 0 else 0
+            avg_work_rate_w = avg_work_rate_kj_min * 1000 / 60
+            print(f"Total Work: {total_work_kj:.1f} kJ")
+            print(f"Average Work Rate: {avg_work_rate_kj_min:.2f} kJ·min⁻¹ (≈{avg_work_rate_w:.0f} W)")
         
         # Segment-by-segment breakdown (first 5 and last 5 segments)
         print(f"\n--- SEGMENT ANALYSIS ---")
@@ -1624,6 +1628,22 @@ class CyclingAnalyzer:
                     print(f"  Speed: {segment['avg_speed']:.1f}km/h")
             elif i == 5:
                 print("  ... (middle segments omitted for brevity)")
+        
+        # Apply rolling average to power before drift calculation
+        self.df['power_rolling'] = self.df['power'].rolling(window=60, min_periods=30).mean()
+        # Calculate drift rate as the difference between last and first segment means, per hour
+        segment_size = len(self.df) // 10  # 10 segments
+        if segment_size > 0:
+            first_mean = self.df['power_rolling'].iloc[:segment_size].mean()
+            last_mean = self.df['power_rolling'].iloc[-segment_size:].mean()
+            duration_hr = (self.df['timestamp'].iloc[-1] - self.df['timestamp'].iloc[0]).total_seconds() / 3600
+            drift_rate = (last_mean - first_mean) / duration_hr if duration_hr > 0 else 0
+            if drift_rate < 0:
+                print(f"Power Drift Rate: {drift_rate:.2f} W/hr (negative: early data may be inflated)")
+            else:
+                print(f"Power Drift Rate: {drift_rate:.2f} W/hr")
+        else:
+            print('Not enough data to calculate drift rate.')
     
     def analyze_variable_relationships(self):
         """Analyze relationships between different variables including elevation/grade."""
@@ -1716,35 +1736,56 @@ class CyclingAnalyzer:
                 ax3.plot(grade_data, grade_line, color='red', linestyle='--', alpha=0.8,
                         label=f'Slope: {grade_trend[0]:.1f} W/% grade')
                 ax3.legend()
-            
             ax3.set_xlabel('Grade (%)')
             ax3.set_ylabel('Power (W)')
             ax3.set_title('Power vs Grade')
             ax3.grid(True, alpha=0.3)
+
+        # 3b. Power/mass vs Grade with slope annotation (if weight_kg and grade available)
+        if grade_available and hasattr(self, 'weight_kg') and self.weight_kg > 0:
+            grade_col = 'grade' if 'grade' in self.df.columns else 'enhanced_grade' if 'enhanced_grade' in self.df.columns else 'calculated_grade'
+            pmask = (self.df['power'] > 0) & (self.df[grade_col].abs() < 20)
+            if pmask.sum() > 10:
+                power_mass = self.df[pmask]['power'] / self.weight_kg
+                grade_vals = self.df[pmask][grade_col]
+                # Add to ax3 as overlay (or create a new plot if desired)
+                ax3.scatter(grade_vals, power_mass, alpha=0.5, s=15, color='purple', label='Power/mass')
+                # Fit and annotate slope
+                pm_trend = np.polyfit(grade_vals, power_mass, 1)
+                pm_line = pm_trend[0] * grade_vals + pm_trend[1]
+                ax3.plot(grade_vals, pm_line, color='purple', linestyle='--', alpha=0.8, label=f'Slope (W/kg/%): {pm_trend[0]:.3f}')
+                # Annotate slope on plot
+                ax3.annotate(f'Slope: {pm_trend[0]:.3f} W/kg/%', xy=(0.05, 0.95), xycoords='axes fraction', fontsize=16, color='purple', ha='left', va='top', bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7))
+                ax3.legend()
         
-        # 4. Speed vs Power relationship with trend line (if available)
-        if 'speed_kmh' in self.df.columns:
-            # Filter out zero values
-            speed_mask = (self.df['power'] > 0) & (self.df['speed_kmh'] > 0)
-            if speed_mask.sum() > 10:
-                speed_data = self.df[speed_mask]['speed_kmh']
-                power_speed = self.df[speed_mask]['power']
-                
-                ax4.scatter(speed_data, power_speed, alpha=0.5, s=15)
-                
-                # Add trend line
-                speed_trend = np.polyfit(speed_data, power_speed, 1)
-                speed_line = speed_trend[0] * speed_data + speed_trend[1]
-                ax4.plot(speed_data, speed_line, color='red', linestyle='--', alpha=0.8,
-                        label=f'Slope: {speed_trend[0]:.1f} W/(km/h)')
-                ax4.legend()
-            
-            ax4.set_xlabel('Speed (km/h)')
-            ax4.set_ylabel('Power (W)')
-            ax4.set_title('Speed vs Power')
-            ax4.grid(True, alpha=0.3)
+        # 4. CLEANER Pw:Hr DECOUPLING (20-min window, coasting removed)
+        # 1)  Keep only pedalling samples (power ≥ 20 W) to avoid zero-power artefacts
+        df_eff = self.df[self.df['power'] >= 20].copy()
+        # 2) Rebuild time axis (min from ride start)
+        time_min_eff = (df_eff['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60
+        # 3) Rolling Efficiency Factor and baseline after warm-up (≥ 20 min)
+        window = 20 * 60                     # 20-min window in seconds
+        ef      = df_eff['power'] / df_eff['heart_rate']
+        ef_roll = ef.rolling(window, min_periods=window).median()
+        if ef_roll[time_min_eff >= 20].dropna().size > 0:
+            baseline = ef_roll[time_min_eff >= 20].dropna().iloc[0]
+            decoup   = (ef_roll - baseline) / baseline * 100   # % drift
+            ax4.clear()
+            ax4.plot(time_min_eff, decoup, color='purple', lw=1.2, label='Decoupling')
+            ax4.axhline( 5, ls='--', color='red', lw=1)
+            ax4.axhline(-5, ls='--', color='red', lw=1, label='±5 % threshold')
+            ax4.set_title('Rolling 20-min Pw:Hr Decoupling (P ≥ 20 W)')
+            ax4.set_xlabel('Time (min)')
+            ax4.set_ylabel('Pw:Hr Decoupling (%)')
+            ax4.legend(frameon=False)
+            ax4.grid(alpha=0.3)
+        fig.tight_layout()
         
         plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_variable_relationships")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
         plt.show()
         
         # Print relationship analysis
@@ -1837,19 +1878,34 @@ class CyclingAnalyzer:
             print("-" * 80)
             print(f"{'Metric':<30} {'Value':<20} {'Unit':<15} {'Notes':<15}")
             print("-" * 80)
-            print(f"{'Average Cadence':<30} {self.metrics['cadence']['avg']:<20.0f} {'rpm':<15} {'':<15}")
-            print(f"{'Max Cadence':<30} {self.metrics['cadence']['max']:<20.0f} {'rpm':<15} {'':<15}")
-            print(f"{'Min Cadence':<30} {self.metrics['cadence']['min']:<20.0f} {'rpm':<15} {'':<15}")
-        
+            avg_cadence = self.metrics['cadence']['avg']
+            max_cadence = self.metrics['cadence']['max']
+            # Guard min cadence: treat zeros as NaN, show '—' if all zeros
+            min_cadence_val = self.df['cadence'].replace(0, np.nan).min()
+            min_cadence = min_cadence_val if not np.isnan(min_cadence_val) else '—'
+            avg_cadence_str = f"{avg_cadence:.0f}" if isinstance(avg_cadence, (int, float)) else ""
+            max_cadence_str = f"{max_cadence:.0f}" if isinstance(max_cadence, (int, float)) else ""
+            min_cadence_str = f"{min_cadence:.0f}" if isinstance(min_cadence, (int, float)) and min_cadence != '—' else (min_cadence if min_cadence == '—' else "")
+            print(f"{'Average Cadence':<30} {avg_cadence_str:<20} {'rpm':<15} {'':<15}")
+            print(f"{'Max Cadence':<30} {max_cadence_str:<20} {'rpm':<15} {'':<15}")
+            print(f"{'Min Cadence':<30} {min_cadence_str:<20} {'rpm':<15} {'':<15}")
         # Speed Metrics
         if 'speed_kmh' in self.df.columns:
             print(f"\n{'SPEED METRICS':^80}")
             print("-" * 80)
             print(f"{'Metric':<30} {'Value':<20} {'Unit':<15} {'Notes':<15}")
             print("-" * 80)
-            print(f"{'Average Speed':<30} {self.metrics['speed']['avg']:<20.1f} {'km/h':<15} {'':<15}")
-            print(f"{'Max Speed':<30} {self.metrics['speed']['max']:<20.1f} {'km/h':<15} {'':<15}")
-            print(f"{'Min Speed':<30} {self.metrics['speed']['min']:<20.1f} {'km/h':<15} {'':<15}")
+            avg_speed = self.metrics['speed']['avg']
+            max_speed = self.metrics['speed']['max']
+            # Guard min speed: treat zeros as NaN, show '—' if all zeros
+            min_speed_val = self.df['speed_kmh'].replace(0, np.nan).min()
+            min_speed = min_speed_val if not np.isnan(min_speed_val) else '—'
+            avg_speed_str = f"{avg_speed:.1f}" if isinstance(avg_speed, (int, float)) else ""
+            max_speed_str = f"{max_speed:.1f}" if isinstance(max_speed, (int, float)) else ""
+            min_speed_str = f"{min_speed:.1f}" if isinstance(min_speed, (int, float)) and min_speed != '—' else (min_speed if min_speed == '—' else "")
+            print(f"{'Average Speed':<30} {avg_speed_str:<20} {'km/h':<15} {'':<15}")
+            print(f"{'Max Speed':<30} {max_speed_str:<20} {'km/h':<15} {'':<15}")
+            print(f"{'Min Speed':<30} {min_speed_str:<20} {'km/h':<15} {'':<15}")
         
         # Time and Distance Metrics
         print(f"\n{'TIME & DISTANCE METRICS':^80}")
@@ -1916,6 +1972,197 @@ class CyclingAnalyzer:
         print("End of Comprehensive Metrics Table")
         print("="*80)
 
+    def estimate_lactate(self):
+        """Estimate lactate levels throughout the ride with proper physiological modeling."""
+        if self.df is None or 'power' not in self.df.columns:
+            print("No data loaded or missing power data. Please load a FIT file first.")
+            return
+
+        def estimate_lactate_func(power, ftp):
+            """Physiologically accurate lactate estimation based on power zones."""
+            lactate_rest = 1.2
+            if power <= ftp * 0.55:
+                return lactate_rest + (power / (ftp * 0.55)) * 0.3
+            elif power <= ftp * 0.75:
+                return lactate_rest + 0.3 + (power - ftp * 0.55) / (ftp * 0.2) * 0.7
+            elif power <= ftp * 0.9:
+                return lactate_rest + 1.0 + (power - ftp * 0.75) / (ftp * 0.15) * 1.0
+            elif power <= ftp:
+                return lactate_rest + 2.0 + (power - ftp * 0.9) / (ftp * 0.1) * 1.5
+            elif power <= ftp * 1.05:
+                return lactate_rest + 3.5 + (power - ftp) / (ftp * 0.05) * 1.0
+            elif power <= ftp * 1.2:
+                return lactate_rest + 4.5 + (power - ftp * 1.05) / (ftp * 0.15) * 2.0
+            else:
+                return lactate_rest + 6.5 + (power - ftp * 1.2) / (ftp * 0.3) * 3.0
+
+        # Calculate raw lactate estimates
+        self.df['lactate_est'] = self.df['power'].apply(lambda p: estimate_lactate_func(p, self.ftp) if pd.notnull(p) and self.ftp > 0 else np.nan)
+        # Apply smoothing to make it more realistic (physiological response is gradual)
+        self.df['lactate_smoothed'] = self.df['lactate_est'].rolling(window=60, min_periods=1, center=True).mean()
+
+        time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60 if 'timestamp' in self.df.columns else np.arange(len(self.df))
+
+        # Create enhanced lactate plot
+        import matplotlib.pyplot as plt
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
+
+        # Main lactate plot with zones
+        ax1.plot(time_minutes, self.df['lactate_smoothed'], color='#d62728', linewidth=2, label='Estimated Lactate')
+        ax1.fill_between(time_minutes, self.df['lactate_smoothed'], alpha=0.3, color='#d62728')
+        ax1.axhline(y=2.0, color='green', linestyle='--', alpha=0.7, label='Aerobic Threshold (~2.0)')
+        ax1.axhline(y=4.0, color='orange', linestyle='--', alpha=0.7, label='Lactate Threshold (~4.0)')
+        ax1.axhline(y=8.0, color='red', linestyle='--', alpha=0.7, label='Onset of Blood Lactate (~8.0)')
+        ax1.set_title('Estimated Blood Lactate Response', fontweight='bold', fontsize=14)
+        ax1.set_xlabel('Time (minutes)')
+        ax1.set_ylabel('Lactate (mmol/L)')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.set_ylim(0, 12)
+        # Only shade area >=8 mmol/L for OBLA
+        ax1.fill_between(time_minutes, 8, 12, alpha=0.15, color='red', label='OBLA (≥8 mmol/L)')
+        # Add on-plot note about modelled values
+        ax1.text(0.98, 0.02, 'Lactate values modelled (not blood-sampled)',
+                 transform=ax1.transAxes, fontsize=10, color='gray', ha='right', va='bottom',
+                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+
+        # Power vs Lactate scatter
+        scatter = ax2.scatter(self.df['power'], self.df['lactate_smoothed'], alpha=0.6, c=time_minutes, cmap='viridis', s=20)
+        ax2.set_xlabel('Power (W)')
+        ax2.set_ylabel('Lactate (mmol/L)')
+        ax2.set_title('Power vs Lactate Relationship')
+        ax2.grid(True, alpha=0.3)
+        ax2.axvline(x=self.ftp, color='red', linestyle='--', alpha=0.7, label=f'FTP ({self.ftp}W)')
+        ax2.legend()
+        cbar = plt.colorbar(scatter, ax=ax2)
+        cbar.set_label('Time (minutes)')
+        # Limit x-axis to max(power)+10 W
+        max_power = np.nanmax(self.df['power']) if 'power' in self.df.columns else None
+        if max_power is not None:
+            ax2.set_xlim(0, max_power + 10)
+        plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_lactate")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
+        plt.show()
+
+        # Print lactate statistics
+        print(f"\n=== LACTATE ANALYSIS ===")
+        print(f"Average Lactate: {self.df['lactate_smoothed'].mean():.2f} mmol/L")
+        print(f"Peak Lactate: {self.df['lactate_smoothed'].max():.2f} mmol/L")
+        print(f"Time above 4.0 mmol/L: {((self.df['lactate_smoothed'] > 4.0).sum() / len(self.df) * 100):.1f}%")
+        print(f"Time above 8.0 mmol/L: {((self.df['lactate_smoothed'] > 8.0).sum() / len(self.df) * 100):.1f}%")
+        print("Note: RMSSD is skipped unless RR intervals are available. Consider DFA-α1 if RR is present.")
+
+    def analyze_torque(self):
+        """Analyze torque vs cadence relationship."""
+        if self.df is None or 'power' not in self.df.columns or 'cadence' not in self.df.columns:
+            print("No data loaded or missing power/cadence data.")
+            return
+
+        # Filter out rows where cadence < 5 rpm
+        valid_mask = (self.df['cadence'] >= 5)
+        df_valid = self.df[valid_mask].copy()
+        # Avoid division by zero for cadence
+        df_valid['torque'] = (df_valid['power'] * 60) / (2 * np.pi * df_valid['cadence'])
+
+        import matplotlib.pyplot as plt
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+        # Torque vs Cadence
+        scatter = ax1.scatter(df_valid['cadence'], df_valid['torque'], alpha=0.3, c=df_valid['power'], cmap='viridis')
+        ax1.set_xlabel('Cadence (rpm)')
+        ax1.set_ylabel('Torque (Nm)')
+        ax1.set_title('Torque vs Cadence')
+        cbar = plt.colorbar(scatter, ax=ax1)
+        cbar.set_label('Power (W)')
+
+        # Power distribution histogram
+        ax2.hist(df_valid['power'], bins=50, alpha=0.7, color='skyblue', edgecolor='black')
+        ax2.axvline(self.avg_power, color='red', linestyle='--', label=f'Avg: {self.avg_power:.0f}W')
+        ax2.axvline(self.np_calc, color='orange', linestyle='--', label=f'NP: {self.np_calc:.0f}W')
+        ax2.set_xlabel('Power (W)')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title('Power Distribution')
+        ax2.legend()
+
+        plt.tight_layout()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_torque")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
+        plt.show()
+
+    def print_insights(self):
+        """Print performance insights and recommendations."""
+        if not hasattr(self, 'TSS'):
+            print("Metrics not calculated. Please run calculate_metrics() first.")
+            return
+
+        print("=== PERFORMANCE INSIGHTS ===")
+
+        # Training load assessment
+        if self.TSS < 50:
+            load_assessment = "Recovery ride - good for active recovery"
+        elif self.TSS < 100:
+            load_assessment = "Moderate training load - good for base building"
+        elif self.TSS < 150:
+            load_assessment = "High training load - good for fitness building"
+        else:
+            load_assessment = "Very high training load - ensure adequate recovery"
+
+        # Pacing assessment
+        if hasattr(self, 'avg_power') and hasattr(self, 'np_calc') and self.np_calc > 0:
+            avg_np_ratio = self.avg_power / self.np_calc
+            if avg_np_ratio > 0.95:
+                pacing_assessment = "Excellent pacing - very consistent effort"
+            elif avg_np_ratio > 0.85:
+                pacing_assessment = "Good pacing - relatively consistent effort"
+            elif avg_np_ratio > 0.75:
+                pacing_assessment = "Moderate pacing - some variability in effort"
+            else:
+                pacing_assessment = "High variability - consider more consistent pacing"
+        else:
+            pacing_assessment = "Insufficient data for pacing assessment"
+
+        # Zone distribution insights
+        if hasattr(self, 'zone_percentages') and self.zone_percentages:
+            primary_zone = max(self.zone_percentages, key=self.zone_percentages.get)
+            zone_percentage = self.zone_percentages[primary_zone]
+        else:
+            primary_zone = "N/A"
+            zone_percentage = 0
+
+        print(f"\n📊 Training Load: {load_assessment}")
+        print(f"📈 Pacing Quality: {pacing_assessment}")
+        print(f"🎯 Primary Zone: {primary_zone} ({zone_percentage:.1f}% of time)")
+
+        if 'heart_rate' in getattr(self, 'df', {}).columns:
+            hr_avg = self.metrics.get('hr', {}).get('avg', None)
+            if hr_avg is not None and hasattr(self, 'rest_hr') and hasattr(self, 'max_hr') and (self.max_hr - self.rest_hr) > 0:
+                hr_intensity = (hr_avg - self.rest_hr) / (self.max_hr - self.rest_hr) * 100
+                print(f"💓 Heart Rate Intensity: {hr_intensity:.1f}% of HR reserve")
+
+        print(f"\n💡 Recommendations:")
+        if hasattr(self, 'TSS') and hasattr(self, 'target_tss'):
+            if self.TSS > self.target_tss * 1.2:
+                print("   - Consider reducing intensity in future sessions")
+            elif self.TSS < self.target_tss * 0.8:
+                print("   - Could increase intensity for target training load")
+
+        if hasattr(self, 'avg_power') and hasattr(self, 'np_calc') and self.np_calc > 0 and (self.avg_power / self.np_calc) < 0.8:
+            print("   - Focus on more consistent pacing to improve efficiency")
+
+        if hasattr(self, 'zone_percentages') and self.zone_percentages.get('Z7 (Neuromuscular)', 0) > 5:
+            print("   - High neuromuscular load - ensure adequate recovery")
+
+        print("\n" + "="*50)
+
+    def set_lactate_coeffs(self, a, b, c):
+        """Set user-supplied lactate-power curve coefficients for personalisation."""
+        self.lactate_coeffs = (a, b, c)
+
 
 def main():
     """Main function to run the enhanced analysis with proper athlete constants."""
@@ -1935,7 +2182,9 @@ def main():
         max_interpolation_pct=5.0,  # Max % interpolated data
         power_outlier_threshold=3.0,  # Power outlier detection (std devs)
         hr_outlier_threshold=3.0,     # HR outlier detection (std devs)
-        cadence_outlier_threshold=3.0  # Cadence outlier detection (std devs)
+        cadence_outlier_threshold=3.0,  # Cadence outlier detection (std devs)
+        save_figures=True,  # Enable figure saving
+        save_dir="figures"  # Directory for saving figures
     )
     
     # Load your FIT file

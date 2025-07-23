@@ -1,0 +1,4 @@
+analysis_id,ride_name,analysis_type,ftp,lthr,timestamp,figures_saved
+Engine_on_nobody_s_driving_20250722_183216,Engine_on_nobody_s_driving,Advanced,250,160,20250722_183216,True
+Found_America_20250722_183257,Found_America,Advanced,250,160,20250722_183257,True
+test_ride_20241222_143052,test_ride,Basic,250,160,20241222_143052,True

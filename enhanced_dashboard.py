@@ -106,15 +106,15 @@ def main():
     
     # Main content tabs
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📁 Upload & Analyze", 
-        "📈 Ride History", 
-        "🔍 Re-analyze", 
-        "⚙️ System Info"
+        "📁 Upload", 
+        "📊 Analyze", 
+        "📈 Data & Figures", 
+        "⚙️ Settings"
     ])
     
-    # Tab 1: Upload & Analyze
+    # Tab 1: Upload
     with tab1:
-        st.header("📁 Upload & Analyze New Ride")
+        st.header("📁 Upload FIT Files")
         
         # File upload section
         uploaded_file = st.file_uploader(
@@ -141,231 +141,293 @@ def main():
                     
                     if success:
                         st.success(message)
-                        st.session_state.current_ride_id = ride_id
-                        st.session_state.current_file_path = file_path
+                        st.info("✅ File uploaded successfully! Switch to 'Analyze' tab to run analysis.")
                     else:
                         st.error(message)
-            
-            # Analysis section (if file is uploaded)
-            if 'current_ride_id' in st.session_state:
-                st.markdown("---")
-                st.header("📊 Analysis Options")
-                
-                analysis_type = st.selectbox(
-                    "Analysis Type",
-                    ["Basic", "Advanced", "Both"],
-                    help="Basic: Core metrics. Advanced: Detailed physiological analysis. Both: Complete analysis."
-                )
-                
-                save_figures = st.checkbox("Save Figures", value=True, help="Save analysis figures to disk")
-                
-                if st.button("🚀 Run Analysis", type="primary"):
-                    ride_id = st.session_state.current_ride_id
-                    file_path = st.session_state.current_file_path
-                    
-                    # Progress tracking
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    try:
-                        # Basic Analysis
-                        if analysis_type in ["Basic", "Both"]:
-                            status_text.text("Running basic analysis...")
-                            progress_bar.progress(25)
-                            
-                            results, df = run_basic_analysis(
-                                file_path, 
-                                ftp=ftp, 
-                                lthr=lthr, 
-                                save_figures=save_figures, 
-                                analysis_id=ride_id
-                            )
-                            
-                            if results:
-                                # Save results
-                                data_manager.save_analysis_results(
-                                    ride_id, "Basic", results, ftp, lthr
-                                )
-                                
-                                # Display results
-                                st.success("✅ Basic analysis completed!")
-                                display_basic_results(results)
-                            else:
-                                st.error("❌ Basic analysis failed")
-                        
-                        # Advanced Analysis
-                        if analysis_type in ["Advanced", "Both"]:
-                            status_text.text("Running advanced analysis...")
-                            progress_bar.progress(75)
-                            
-                            analyzer = CyclingAnalyzer(
-                                save_figures=save_figures, 
-                                ftp=ftp, 
-                                save_dir="figures"
-                            )
-                            
-                            if analyzer.load_fit_file(file_path):
-                                analyzer.clean_and_smooth_data()
-                                analyzer.calculate_metrics()
-                                analyzer.print_summary()
-                                analyzer.create_dashboard()
-                                
-                                # Save results
-                                data_manager.save_analysis_results(
-                                    ride_id, "Advanced", {"status": "completed"}, ftp, lthr
-                                )
-                                
-                                st.success("✅ Advanced analysis completed!")
-                                st.info("📊 Check the figures directory for detailed visualizations")
-                            else:
-                                st.error("❌ Advanced analysis failed")
-                        
-                        progress_bar.progress(100)
-                        status_text.text("✅ Analysis complete!")
-                        
-                        # Clear session state
-                        if 'current_ride_id' in st.session_state:
-                            del st.session_state.current_ride_id
-                        if 'current_file_path' in st.session_state:
-                            del st.session_state.current_file_path
-                        
-                    except Exception as e:
-                        st.error(f"❌ Analysis failed: {str(e)}")
-                        progress_bar.progress(0)
-    
-    # Tab 2: Ride History
-    with tab2:
-        st.header("📈 Ride History")
         
-        # Get available rides
+        # Show uploaded files
+        st.markdown("---")
+        st.subheader("📋 Uploaded Files")
+        
+        available_rides = data_manager.get_available_rides()
+        if available_rides:
+            for ride in available_rides:
+                ride_data = data_manager.get_ride_data(ride)
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                with col1:
+                    st.write(f"**{ride}**")
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.caption(f"Duration: {format_duration(history.get('duration_min', 0))} | "
+                                 f"Distance: {format_distance(history.get('distance_km', 0))} | "
+                                 f"Avg Power: {format_power(history.get('avg_power_W', 0))}")
+                
+                with col2:
+                    if ride_data['has_fit_file']:
+                        st.success("✅ FIT")
+                    else:
+                        st.error("❌ Missing")
+                
+                with col3:
+                    if ride_data['analysis_available']:
+                        st.success("✅ Analyzed")
+                    else:
+                        st.info("⏳ Pending")
+        else:
+            st.info("No files uploaded yet. Upload a FIT file to get started.")
+    
+    # Tab 2: Analyze
+    with tab2:
+        st.header("📊 Analyze Rides")
+        
         available_rides = data_manager.get_available_rides()
         
         if not available_rides:
-            st.info("No rides available. Upload a FIT file to get started.")
+            st.info("No rides available for analysis. Upload a FIT file in the 'Upload' tab first.")
         else:
             # Ride selection
             selected_ride = st.selectbox(
-                "Select a ride to view:",
+                "Select a ride to analyze:",
                 available_rides,
-                help="Choose a ride from your history"
+                help="Choose a ride from your uploaded files"
             )
             
             if selected_ride:
-                # Get comprehensive ride data
                 ride_data = data_manager.get_ride_data(selected_ride)
                 
-                # Display ride status
-                col1, col2, col3 = st.columns(3)
+                # Check if FIT file is available
+                if not ride_data['has_fit_file']:
+                    st.warning(f"❌ No FIT file available for '{selected_ride}'. Please upload the file first.")
+                else:
+                    st.success(f"✅ FIT file available for '{selected_ride}'")
+                    
+                    # Analysis options
+                    st.subheader("Analysis Options")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        analysis_type = st.selectbox(
+                            "Analysis Type",
+                            ["Basic", "Advanced", "Both"],
+                            help="Basic: Core metrics. Advanced: Detailed physiological analysis. Both: Complete analysis."
+                        )
+                    
+                    with col2:
+                        save_figures = st.checkbox("Save Figures", value=True, help="Save analysis figures to disk")
+                    
+                    if st.button("🚀 Run Analysis", type="primary"):
+                        file_path = ride_data['fit_file_path']
+                        
+                        # Progress tracking
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        try:
+                            # Basic Analysis
+                            if analysis_type in ["Basic", "Both"]:
+                                status_text.text("Running basic analysis...")
+                                progress_bar.progress(25)
+                                
+                                results, df = run_basic_analysis(
+                                    file_path, 
+                                    ftp=ftp, 
+                                    lthr=lthr, 
+                                    save_figures=save_figures, 
+                                    analysis_id=selected_ride
+                                )
+                                
+                                if results:
+                                    # Save results
+                                    data_manager.save_analysis_results(
+                                        selected_ride, "Basic", results, ftp, lthr
+                                    )
+                                    
+                                    # Display results
+                                    st.success("✅ Basic analysis completed!")
+                                    display_basic_results(results)
+                                else:
+                                    st.error("❌ Basic analysis failed")
+                            
+                            # Advanced Analysis
+                            if analysis_type in ["Advanced", "Both"]:
+                                status_text.text("Running advanced analysis...")
+                                progress_bar.progress(75)
+                                
+                                analyzer = CyclingAnalyzer(
+                                    save_figures=save_figures, 
+                                    ftp=ftp, 
+                                    save_dir="figures"
+                                )
+                                
+                                if analyzer.load_fit_file(file_path):
+                                    analyzer.clean_and_smooth_data()
+                                    analyzer.calculate_metrics()
+                                    analyzer.print_summary()
+                                    analyzer.create_dashboard()
+                                    
+                                    # Save results
+                                    data_manager.save_analysis_results(
+                                        selected_ride, "Advanced", {"status": "completed"}, ftp, lthr
+                                    )
+                                    
+                                    st.success("✅ Advanced analysis completed!")
+                                    st.info("📊 Check the 'Data & Figures' tab for detailed visualizations")
+                                else:
+                                    st.error("❌ Advanced analysis failed")
+                            
+                            progress_bar.progress(100)
+                            status_text.text("✅ Analysis complete!")
+                            
+                        except Exception as e:
+                            st.error(f"❌ Analysis failed: {str(e)}")
+                            progress_bar.progress(0)
+    
+    # Tab 3: Data & Figures
+    with tab3:
+        st.header("📈 Data & Figures")
+        
+        available_rides = data_manager.get_available_rides()
+        
+        if not available_rides:
+            st.info("No rides available. Upload and analyze rides to see data and figures.")
+        else:
+            # Ride selection for viewing data
+            selected_ride_data = st.selectbox(
+                "Select a ride to view data and figures:",
+                available_rides,
+                help="Choose a ride to view its analysis results and figures"
+            )
+            
+            if selected_ride_data:
+                ride_data = data_manager.get_ride_data(selected_ride_data)
+                
+                # Display ride summary
+                st.subheader(f"📊 Ride Summary: {selected_ride_data}")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
                 with col1:
                     st.metric("FIT File", "✅ Available" if ride_data['has_fit_file'] else "❌ Missing")
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("Duration", format_duration(history.get('duration_min', 0)))
+                
                 with col2:
-                    st.metric("In History", "✅ Yes" if ride_data['in_history'] else "❌ No")
-                with col3:
                     st.metric("Analysis", "✅ Available" if ride_data['analysis_available'] else "❌ None")
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("Distance", format_distance(history.get('distance_km', 0)))
                 
-                # File integrity check
-                if ride_data['has_fit_file']:
-                    is_valid, integrity_msg = data_manager.validate_file_integrity(selected_ride)
-                    if is_valid:
-                        st.success(f"✅ {integrity_msg}")
-                    else:
-                        st.warning(f"⚠️ {integrity_msg}")
+                with col3:
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("Avg Power", format_power(history.get('avg_power_W', 0)))
+                        st.metric("NP", format_power(history.get('NP_W', 0)))
                 
-                # Display history data if available
+                with col4:
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("IF", format_percentage(history.get('IF', 0) * 100))
+                        st.metric("TSS", format_number(history.get('TSS', 0)))
+                
+                # Display detailed history data
                 if ride_data['in_history'] and ride_data['history_data']:
                     st.markdown("---")
-                    st.subheader("📊 Ride Summary")
+                    st.subheader("📋 Detailed Metrics")
                     
-                    history_data = ride_data['history_data']
+                    history = ride_data['history_data']
                     
-                    # Create summary display
-                    summary_cols = st.columns(4)
+                    # Create detailed metrics display
+                    metrics_cols = st.columns(4)
                     
-                    with summary_cols[0]:
-                        st.metric("Duration", format_duration(history_data.get('duration_min', 0)))
-                        st.metric("Distance", format_distance(history_data.get('distance_km', 0)))
+                    with metrics_cols[0]:
+                        st.markdown("**Power Metrics**")
+                        st.metric("Max Power", format_power(history.get('max_power_W', 0)))
+                        st.metric("Avg Power", format_power(history.get('avg_power_W', 0)))
+                        st.metric("NP", format_power(history.get('NP_W', 0)))
+                        st.metric("VI", format_number(history.get('VI', 0)))
                     
-                    with summary_cols[1]:
-                        st.metric("Avg Power", format_power(history_data.get('avg_power_W', 0)))
-                        st.metric("NP", format_power(history_data.get('NP_W', 0)))
+                    with metrics_cols[1]:
+                        st.markdown("**Heart Rate**")
+                        st.metric("Avg HR", format_number(history.get('avg_hr', 0)))
+                        st.metric("Max HR", format_number(history.get('max_hr', 0)))
+                        st.metric("Min HR", format_number(history.get('min_hr', 0)))
+                        st.metric("HR Range", format_number(history.get('max_hr', 0) - history.get('min_hr', 0)))
                     
-                    with summary_cols[2]:
-                        st.metric("IF", format_percentage(history_data.get('IF', 0) * 100))
-                        st.metric("TSS", format_number(history_data.get('TSS', 0)))
+                    with metrics_cols[2]:
+                        st.markdown("**Training Load**")
+                        st.metric("IF", format_percentage(history.get('IF', 0) * 100))
+                        st.metric("TSS", format_number(history.get('TSS', 0)))
+                        st.metric("Duration", format_duration(history.get('duration_min', 0)))
+                        st.metric("Distance", format_distance(history.get('distance_km', 0)))
                     
-                    with summary_cols[3]:
-                        st.metric("Avg HR", format_number(history_data.get('avg_hr', 0)))
-                        st.metric("Max HR", format_number(history_data.get('max_hr', 0)))
+                    with metrics_cols[3]:
+                        st.markdown("**Other Metrics**")
+                        st.metric("Calories", format_number(history.get('calories', 0)))
+                        st.metric("Elevation", f"{history.get('total_elevation_m', 0):.0f}m")
+                        st.metric("Avg Speed", f"{history.get('avg_speed_kmh', 0):.1f} km/h")
+                        st.metric("Max Speed", f"{history.get('max_speed_kmh', 0):.1f} km/h")
                 
-                # Add delete option for this ride
+                # Display figures
                 st.markdown("---")
-                st.subheader("🗑️ Ride Actions")
+                st.subheader("📊 Analysis Figures")
+                
+                # Check for available figures
+                figures_dir = pathlib.Path("figures")
+                ride_figures = []
+                
+                if figures_dir.exists():
+                    for figure_file in figures_dir.glob(f"{selected_ride_data}_*"):
+                        if figure_file.suffix in ['.png', '.svg']:
+                            ride_figures.append(figure_file)
+                
+                if ride_figures:
+                    st.success(f"✅ Found {len(ride_figures)} figures for this ride")
+                    
+                    # Group figures by type
+                    figure_types = {}
+                    for fig in ride_figures:
+                        fig_name = fig.stem.replace(f"{selected_ride_data}_", "")
+                        if fig_name not in figure_types:
+                            figure_types[fig_name] = []
+                        figure_types[fig_name].append(fig)
+                    
+                    # Display figures by type
+                    for fig_type, figures in figure_types.items():
+                        st.markdown(f"**{fig_type.replace('_', ' ').title()}**")
+                        
+                        cols = st.columns(min(len(figures), 2))
+                        for i, fig in enumerate(figures):
+                            with cols[i % len(cols)]:
+                                st.image(str(fig), caption=fig.name, use_column_width=True)
+                        
+                        st.markdown("---")
+                else:
+                    st.info("No figures found for this ride. Run analysis to generate figures.")
+                
+                # Re-analyze option
+                st.markdown("---")
+                st.subheader("🔄 Re-analyze This Ride")
                 
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    # Confirmation checkbox for ride history deletion
-                    confirm_delete_history = st.checkbox(
-                        "I understand this will permanently delete this ride and all associated data",
-                        key=f"confirm_delete_history_{selected_ride}"
-                    )
-                    
-                    if st.button("🗑️ Delete This Ride", type="secondary", key=f"delete_{selected_ride}", disabled=not confirm_delete_history):
-                        with st.spinner(f"Deleting {selected_ride}..."):
-                            success, message = data_manager.delete_ride(selected_ride)
-                            if success:
-                                st.success(message)
-                                st.rerun()  # Refresh the page to update the list
-                            else:
-                                st.warning(message)
-                    
-                    if not confirm_delete_history:
-                        st.info("Please check the confirmation box above to enable deletion")
-                
-                with col2:
-                    if st.button("🔄 Re-analyze This Ride", type="primary", key=f"reanalyze_{selected_ride}"):
-                        st.info("Switch to the 'Re-analyze' tab to run analysis on this ride")
-    
-    # Tab 3: Re-analyze
-    with tab3:
-        st.header("🔍 Re-analyze Existing Ride")
-        
-        available_rides = data_manager.get_available_rides()
-        
-        if not available_rides:
-            st.info("No rides available for re-analysis.")
-        else:
-            # Ride selection for re-analysis
-            reanalyze_ride = st.selectbox(
-                "Select ride to re-analyze:",
-                available_rides,
-                help="Choose a ride to run new analysis on"
-            )
-            
-            if reanalyze_ride:
-                ride_data = data_manager.get_ride_data(reanalyze_ride)
-                
-                # Check if FIT file is available
-                if not ride_data['has_fit_file']:
-                    st.warning(f"❌ No FIT file available for '{reanalyze_ride}'. Please upload the file first.")
-                else:
-                    st.success(f"✅ FIT file available for '{reanalyze_ride}'")
-                    
-                    # Re-analysis options
-                    st.subheader("Analysis Options")
-                    
                     reanalysis_type = st.selectbox(
                         "Analysis Type",
                         ["Basic", "Advanced", "Both"],
                         key="reanalysis_type"
                     )
-                    
+                
+                with col2:
                     reanalysis_save_figures = st.checkbox("Save Figures", value=True, key="reanalysis_save")
-                    
-                    if st.button("🔄 Run Re-analysis", type="primary"):
+                
+                if st.button("🔄 Run Re-analysis", type="primary"):
+                    if ride_data['has_fit_file']:
                         file_path = ride_data['fit_file_path']
                         
-                        with st.spinner(f"Re-analyzing {reanalyze_ride}..."):
+                        with st.spinner(f"Re-analyzing {selected_ride_data}..."):
                             try:
                                 # Basic re-analysis
                                 if reanalysis_type in ["Basic", "Both"]:
@@ -374,15 +436,15 @@ def main():
                                         ftp=ftp, 
                                         lthr=lthr, 
                                         save_figures=reanalysis_save_figures, 
-                                        analysis_id=f"{reanalyze_ride}_reanalysis"
+                                        analysis_id=f"{selected_ride_data}_reanalysis"
                                     )
                                     
                                     if results:
                                         data_manager.save_analysis_results(
-                                            reanalyze_ride, "Basic", results, ftp, lthr
+                                            selected_ride_data, "Basic", results, ftp, lthr
                                         )
                                         st.success("✅ Basic re-analysis completed!")
-                                        display_basic_results(results)
+                                        st.rerun()  # Refresh to show new figures
                                 
                                 # Advanced re-analysis
                                 if reanalysis_type in ["Advanced", "Both"]:
@@ -399,18 +461,20 @@ def main():
                                         analyzer.create_dashboard()
                                         
                                         data_manager.save_analysis_results(
-                                            reanalyze_ride, "Advanced", {"status": "completed"}, ftp, lthr
+                                            selected_ride_data, "Advanced", {"status": "completed"}, ftp, lthr
                                         )
                                         
                                         st.success("✅ Advanced re-analysis completed!")
-                                        st.info("📊 Check the figures directory for updated visualizations")
+                                        st.rerun()  # Refresh to show new figures
                                 
                             except Exception as e:
                                 st.error(f"❌ Re-analysis failed: {str(e)}")
+                    else:
+                        st.error("❌ No FIT file available for re-analysis")
     
-    # Tab 4: System Info
+    # Tab 4: Settings
     with tab4:
-        st.header("⚙️ System Information")
+        st.header("⚙️ Settings & System Info")
         
         # System status
         status = data_manager.get_system_status()

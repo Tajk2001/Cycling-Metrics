@@ -296,6 +296,30 @@ def main():
                     with summary_cols[3]:
                         st.metric("Avg HR", format_number(history_data.get('avg_hr', 0)))
                         st.metric("Max HR", format_number(history_data.get('max_hr', 0)))
+                
+                # Add delete option for this ride
+                st.markdown("---")
+                st.subheader("🗑️ Ride Actions")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("🗑️ Delete This Ride", type="secondary", key=f"delete_{selected_ride}"):
+                        # Confirmation dialog
+                        if st.checkbox("I understand this will permanently delete this ride and all associated data", key=f"confirm_delete_{selected_ride}"):
+                            with st.spinner(f"Deleting {selected_ride}..."):
+                                success, message = data_manager.delete_ride(selected_ride)
+                                if success:
+                                    st.success(message)
+                                    st.rerun()  # Refresh the page to update the list
+                                else:
+                                    st.warning(message)
+                        else:
+                            st.warning("Please confirm deletion by checking the box above")
+                
+                with col2:
+                    if st.button("🔄 Re-analyze This Ride", type="primary", key=f"reanalyze_{selected_ride}"):
+                        st.info("Switch to the 'Re-analyze' tab to run analysis on this ride")
     
     # Tab 3: Re-analyze
     with tab3:
@@ -417,6 +441,59 @@ def main():
         with col2:
             if st.button("📥 Import Data"):
                 st.info("Import functionality requires manual file placement in data directory")
+        
+        # Ride management
+        st.markdown("---")
+        st.subheader("🗑️ Ride Management")
+        
+        # Get available rides for deletion
+        available_rides = data_manager.get_available_rides()
+        
+        if available_rides:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Delete Specific Ride**")
+                selected_ride_to_delete = st.selectbox(
+                    "Select ride to delete:",
+                    available_rides,
+                    key="delete_ride_select"
+                )
+                
+                if st.button("🗑️ Delete Selected Ride", type="secondary"):
+                    # Confirmation dialog
+                    if st.checkbox("I understand this will permanently delete this ride and all associated data", key="confirm_delete"):
+                        with st.spinner(f"Deleting {selected_ride_to_delete}..."):
+                            success, message = data_manager.delete_ride(selected_ride_to_delete)
+                            if success:
+                                st.success(message)
+                                st.rerun()  # Refresh the page to update the list
+                            else:
+                                st.warning(message)
+                    else:
+                        st.warning("Please confirm deletion by checking the box above")
+            
+            with col2:
+                st.markdown("**Clear All Rides**")
+                st.markdown("⚠️ **Warning**: This will delete ALL rides and data!")
+                
+                if st.button("🗑️ Clear All Rides", type="secondary"):
+                    # Confirmation dialog
+                    if st.checkbox("I understand this will permanently delete ALL rides and data", key="confirm_clear_all"):
+                        if st.checkbox("I am absolutely sure I want to delete everything", key="confirm_clear_all_final"):
+                            with st.spinner("Clearing all rides..."):
+                                success, message = data_manager.clear_all_rides()
+                                if success:
+                                    st.success(message)
+                                    st.rerun()  # Refresh the page
+                                else:
+                                    st.warning(message)
+                        else:
+                            st.warning("Please confirm by checking both boxes above")
+                    else:
+                        st.warning("Please confirm deletion by checking the box above")
+        else:
+            st.info("No rides available to delete")
         
         # File registry
         st.markdown("---")

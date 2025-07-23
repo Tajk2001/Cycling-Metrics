@@ -437,4 +437,182 @@ class CyclingDataManager:
             
         except Exception as e:
             logger.error(f"Import failed: {e}")
-            return False 
+            return False
+    
+    def delete_ride(self, ride_id: str) -> Tuple[bool, str]:
+        """
+        Delete a specific ride and all associated data.
+        
+        Args:
+            ride_id (str): The ride ID to delete
+            
+        Returns:
+            Tuple[bool, str]: (success, message)
+        """
+        try:
+            deleted_items = []
+            
+            # 1. Remove FIT file from cache
+            fit_file_path = self.get_fit_file_path(ride_id)
+            if fit_file_path and pathlib.Path(fit_file_path).exists():
+                try:
+                    pathlib.Path(fit_file_path).unlink()
+                    deleted_items.append("FIT file")
+                    logger.info(f"Deleted FIT file: {fit_file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete FIT file {fit_file_path}: {e}")
+            
+            # 2. Remove from file registry
+            if ride_id in self.file_registry:
+                del self.file_registry[ride_id]
+                deleted_items.append("file registry entry")
+                logger.info(f"Removed from file registry: {ride_id}")
+            
+            # 3. Remove from session state
+            if ride_id in st.session_state.uploaded_files:
+                del st.session_state.uploaded_files[ride_id]
+                deleted_items.append("session cache")
+                logger.info(f"Removed from session cache: {ride_id}")
+            
+            # 4. Remove from ride history
+            if not self.ride_history.empty and ride_id in self.ride_history['ride_id'].values:
+                self.ride_history = self.ride_history[self.ride_history['ride_id'] != ride_id]
+                deleted_items.append("ride history entry")
+                logger.info(f"Removed from ride history: {ride_id}")
+            
+            # 5. Remove from analysis history
+            if not self.analysis_history.empty and ride_id in self.analysis_history['ride_name'].values:
+                self.analysis_history = self.analysis_history[self.analysis_history['ride_name'] != ride_id]
+                deleted_items.append("analysis history entry")
+                logger.info(f"Removed from analysis history: {ride_id}")
+            
+            # 6. Remove associated figures
+            figure_patterns = [
+                f"{ride_id}_dashboard.*",
+                f"{ride_id}_fatigue_patterns.*",
+                f"{ride_id}_heat_stress.*",
+                f"{ride_id}_lactate.*",
+                f"{ride_id}_power_hr_efficiency.*",
+                f"{ride_id}_torque.*",
+                f"{ride_id}_variable_relationships.*",
+                f"{ride_id}_w_prime_balance.*"
+            ]
+            
+            figures_deleted = 0
+            for pattern in figure_patterns:
+                for figure_file in self.figures_dir.glob(pattern):
+                    try:
+                        figure_file.unlink()
+                        figures_deleted += 1
+                        logger.info(f"Deleted figure: {figure_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete figure {figure_file}: {e}")
+            
+            if figures_deleted > 0:
+                deleted_items.append(f"{figures_deleted} figure files")
+            
+            # 7. Save updated data
+            self.save_data()
+            
+            if deleted_items:
+                message = f"✅ Successfully deleted ride '{ride_id}'. Removed: {', '.join(deleted_items)}"
+                logger.info(message)
+                return True, message
+            else:
+                message = f"⚠️ Ride '{ride_id}' not found or already deleted"
+                logger.warning(message)
+                return False, message
+                
+        except Exception as e:
+            error_msg = f"❌ Error deleting ride '{ride_id}': {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def clear_all_rides(self) -> Tuple[bool, str]:
+        """
+        Clear all rides and associated data.
+        
+        Returns:
+            Tuple[bool, str]: (success, message)
+        """
+        try:
+            # Create backup before clearing
+            backup_path = f"backup_before_clear_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if self.export_data(backup_path):
+                logger.info(f"Created backup before clearing: {backup_path}")
+            
+            deleted_counts = {
+                'fit_files': 0,
+                'history_entries': 0,
+                'analysis_entries': 0,
+                'figures': 0
+            }
+            
+            # 1. Clear all FIT files from cache
+            for fit_file in self.cache_dir.glob("*.fit"):
+                try:
+                    fit_file.unlink()
+                    deleted_counts['fit_files'] += 1
+                    logger.info(f"Deleted FIT file: {fit_file}")
+                except Exception as e:
+                    logger.error(f"Failed to delete FIT file {fit_file}: {e}")
+            
+            # 2. Clear file registry
+            registry_count = len(self.file_registry)
+            self.file_registry.clear()
+            logger.info(f"Cleared file registry ({registry_count} entries)")
+            
+            # 3. Clear session state
+            session_count = len(st.session_state.uploaded_files)
+            st.session_state.uploaded_files.clear()
+            logger.info(f"Cleared session cache ({session_count} entries)")
+            
+            # 4. Clear ride history
+            if not self.ride_history.empty:
+                deleted_counts['history_entries'] = len(self.ride_history)
+                self.ride_history = pd.DataFrame()
+                logger.info(f"Cleared ride history ({deleted_counts['history_entries']} entries)")
+            
+            # 5. Clear analysis history
+            if not self.analysis_history.empty:
+                deleted_counts['analysis_entries'] = len(self.analysis_history)
+                self.analysis_history = pd.DataFrame()
+                logger.info(f"Cleared analysis history ({deleted_counts['analysis_entries']} entries)")
+            
+            # 6. Clear all figures (except keep directory structure)
+            for figure_file in self.figures_dir.glob("*"):
+                if figure_file.is_file():
+                    try:
+                        figure_file.unlink()
+                        deleted_counts['figures'] += 1
+                        logger.info(f"Deleted figure: {figure_file}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete figure {figure_file}: {e}")
+            
+            # 7. Save updated data
+            self.save_data()
+            
+            # Create summary message
+            summary_parts = []
+            if deleted_counts['fit_files'] > 0:
+                summary_parts.append(f"{deleted_counts['fit_files']} FIT files")
+            if deleted_counts['history_entries'] > 0:
+                summary_parts.append(f"{deleted_counts['history_entries']} history entries")
+            if deleted_counts['analysis_entries'] > 0:
+                summary_parts.append(f"{deleted_counts['analysis_entries']} analysis entries")
+            if deleted_counts['figures'] > 0:
+                summary_parts.append(f"{deleted_counts['figures']} figure files")
+            
+            if summary_parts:
+                message = f"✅ Successfully cleared all rides. Removed: {', '.join(summary_parts)}. Backup created: {backup_path}"
+                logger.info(message)
+                return True, message
+            else:
+                message = "⚠️ No rides found to clear"
+                logger.warning(message)
+                return False, message
+                
+        except Exception as e:
+            error_msg = f"❌ Error clearing all rides: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg 

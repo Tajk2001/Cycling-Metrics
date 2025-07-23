@@ -4,19 +4,22 @@ A comprehensive, error-proof cycling data analysis system with robust data manag
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### For Warp Terminal Users (Recommended)
 ```bash
-pip install -r requirements.txt
+python warp_start.py
 ```
 
-### 2. Launch Dashboard
+### For Other Terminals
 ```bash
 python start.py
 ```
 
-**Or manually:**
+### Manual Setup (if needed)
 ```bash
-source venv/bin/activate  # macOS/Linux
+# Install dependencies
+pip install -r requirements.txt
+
+# Launch dashboard
 streamlit run enhanced_dashboard.py
 ```
 
@@ -57,7 +60,8 @@ cycling_analysis/
 ├── data_manager.py         # Data management
 ├── enhanced_cycling_analysis.py  # Analysis engine
 ├── app.py                  # Basic analysis
-├── start.py               # Startup script
+├── start.py               # Startup script (general)
+├── warp_start.py          # Startup script (Warp optimized)
 ├── data/                  # Core data files
 ├── cache/                 # FIT file storage
 ├── figures/               # Analysis visualizations
@@ -68,6 +72,10 @@ cycling_analysis/
 
 ### "streamlit: command not found"
 ```bash
+# For Warp users
+python warp_start.py
+
+# For other terminals
 source venv/bin/activate
 pip install streamlit
 ```

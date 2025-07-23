@@ -450,10 +450,12 @@ class CyclingDataManager:
             Tuple[bool, str]: (success, message)
         """
         try:
+            logger.info(f"Starting deletion of ride: {ride_id}")
             deleted_items = []
             
             # 1. Remove FIT file from cache
             fit_file_path = self.get_fit_file_path(ride_id)
+            logger.info(f"FIT file path for {ride_id}: {fit_file_path}")
             if fit_file_path and pathlib.Path(fit_file_path).exists():
                 try:
                     pathlib.Path(fit_file_path).unlink()
@@ -461,30 +463,44 @@ class CyclingDataManager:
                     logger.info(f"Deleted FIT file: {fit_file_path}")
                 except Exception as e:
                     logger.error(f"Failed to delete FIT file {fit_file_path}: {e}")
+            else:
+                logger.info(f"No FIT file found for {ride_id}")
             
             # 2. Remove from file registry
             if ride_id in self.file_registry:
                 del self.file_registry[ride_id]
                 deleted_items.append("file registry entry")
                 logger.info(f"Removed from file registry: {ride_id}")
+            else:
+                logger.info(f"Ride {ride_id} not found in file registry")
             
             # 3. Remove from session state
             if ride_id in st.session_state.uploaded_files:
                 del st.session_state.uploaded_files[ride_id]
                 deleted_items.append("session cache")
                 logger.info(f"Removed from session cache: {ride_id}")
+            else:
+                logger.info(f"Ride {ride_id} not found in session cache")
             
             # 4. Remove from ride history
             if not self.ride_history.empty and ride_id in self.ride_history['ride_id'].values:
+                before_count = len(self.ride_history)
                 self.ride_history = self.ride_history[self.ride_history['ride_id'] != ride_id]
+                after_count = len(self.ride_history)
                 deleted_items.append("ride history entry")
-                logger.info(f"Removed from ride history: {ride_id}")
+                logger.info(f"Removed from ride history: {ride_id} (before: {before_count}, after: {after_count})")
+            else:
+                logger.info(f"Ride {ride_id} not found in ride history")
             
             # 5. Remove from analysis history
             if not self.analysis_history.empty and ride_id in self.analysis_history['ride_name'].values:
+                before_count = len(self.analysis_history)
                 self.analysis_history = self.analysis_history[self.analysis_history['ride_name'] != ride_id]
+                after_count = len(self.analysis_history)
                 deleted_items.append("analysis history entry")
-                logger.info(f"Removed from analysis history: {ride_id}")
+                logger.info(f"Removed from analysis history: {ride_id} (before: {before_count}, after: {after_count})")
+            else:
+                logger.info(f"Ride {ride_id} not found in analysis history")
             
             # 6. Remove associated figures
             figure_patterns = [
@@ -510,9 +526,12 @@ class CyclingDataManager:
             
             if figures_deleted > 0:
                 deleted_items.append(f"{figures_deleted} figure files")
+            else:
+                logger.info(f"No figures found for {ride_id}")
             
             # 7. Save updated data
-            self.save_data()
+            save_success = self.save_data()
+            logger.info(f"Data save after deletion: {save_success}")
             
             if deleted_items:
                 message = f"✅ Successfully deleted ride '{ride_id}'. Removed: {', '.join(deleted_items)}"

@@ -304,18 +304,23 @@ def main():
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    if st.button("🗑️ Delete This Ride", type="secondary", key=f"delete_{selected_ride}"):
-                        # Confirmation dialog
-                        if st.checkbox("I understand this will permanently delete this ride and all associated data", key=f"confirm_delete_{selected_ride}"):
-                            with st.spinner(f"Deleting {selected_ride}..."):
-                                success, message = data_manager.delete_ride(selected_ride)
-                                if success:
-                                    st.success(message)
-                                    st.rerun()  # Refresh the page to update the list
-                                else:
-                                    st.warning(message)
-                        else:
-                            st.warning("Please confirm deletion by checking the box above")
+                    # Confirmation checkbox for ride history deletion
+                    confirm_delete_history = st.checkbox(
+                        "I understand this will permanently delete this ride and all associated data",
+                        key=f"confirm_delete_history_{selected_ride}"
+                    )
+                    
+                    if st.button("🗑️ Delete This Ride", type="secondary", key=f"delete_{selected_ride}", disabled=not confirm_delete_history):
+                        with st.spinner(f"Deleting {selected_ride}..."):
+                            success, message = data_manager.delete_ride(selected_ride)
+                            if success:
+                                st.success(message)
+                                st.rerun()  # Refresh the page to update the list
+                            else:
+                                st.warning(message)
+                    
+                    if not confirm_delete_history:
+                        st.info("Please check the confirmation box above to enable deletion")
                 
                 with col2:
                     if st.button("🔄 Re-analyze This Ride", type="primary", key=f"reanalyze_{selected_ride}"):
@@ -460,38 +465,53 @@ def main():
                     key="delete_ride_select"
                 )
                 
-                if st.button("🗑️ Delete Selected Ride", type="secondary"):
-                    # Confirmation dialog
-                    if st.checkbox("I understand this will permanently delete this ride and all associated data", key="confirm_delete"):
-                        with st.spinner(f"Deleting {selected_ride_to_delete}..."):
-                            success, message = data_manager.delete_ride(selected_ride_to_delete)
-                            if success:
-                                st.success(message)
-                                st.rerun()  # Refresh the page to update the list
-                            else:
-                                st.warning(message)
-                    else:
-                        st.warning("Please confirm deletion by checking the box above")
+                # Confirmation checkbox for individual ride deletion
+                confirm_delete = st.checkbox(
+                    "I understand this will permanently delete this ride and all associated data",
+                    key="confirm_delete"
+                )
+                
+                if st.button("🗑️ Delete Selected Ride", type="secondary", disabled=not confirm_delete):
+                    with st.spinner(f"Deleting {selected_ride_to_delete}..."):
+                        success, message = data_manager.delete_ride(selected_ride_to_delete)
+                        if success:
+                            st.success(message)
+                            st.rerun()  # Refresh the page to update the list
+                        else:
+                            st.warning(message)
+                
+                if not confirm_delete:
+                    st.info("Please check the confirmation box above to enable deletion")
             
             with col2:
                 st.markdown("**Clear All Rides**")
                 st.markdown("⚠️ **Warning**: This will delete ALL rides and data!")
                 
-                if st.button("🗑️ Clear All Rides", type="secondary"):
-                    # Confirmation dialog
-                    if st.checkbox("I understand this will permanently delete ALL rides and data", key="confirm_clear_all"):
-                        if st.checkbox("I am absolutely sure I want to delete everything", key="confirm_clear_all_final"):
-                            with st.spinner("Clearing all rides..."):
-                                success, message = data_manager.clear_all_rides()
-                                if success:
-                                    st.success(message)
-                                    st.rerun()  # Refresh the page
-                                else:
-                                    st.warning(message)
+                # Confirmation checkboxes for clear all
+                confirm_clear_all = st.checkbox(
+                    "I understand this will permanently delete ALL rides and data",
+                    key="confirm_clear_all"
+                )
+                
+                confirm_clear_all_final = st.checkbox(
+                    "I am absolutely sure I want to delete everything",
+                    key="confirm_clear_all_final",
+                    disabled=not confirm_clear_all
+                )
+                
+                if st.button("🗑️ Clear All Rides", type="secondary", disabled=not (confirm_clear_all and confirm_clear_all_final)):
+                    with st.spinner("Clearing all rides..."):
+                        success, message = data_manager.clear_all_rides()
+                        if success:
+                            st.success(message)
+                            st.rerun()  # Refresh the page
                         else:
-                            st.warning("Please confirm by checking both boxes above")
-                    else:
-                        st.warning("Please confirm deletion by checking the box above")
+                            st.warning(message)
+                
+                if not confirm_clear_all:
+                    st.info("Please check the first confirmation box above")
+                elif not confirm_clear_all_final:
+                    st.info("Please check both confirmation boxes above")
         else:
             st.info("No rides available to delete")
         

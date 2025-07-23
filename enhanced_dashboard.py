@@ -300,10 +300,10 @@ def main():
                             "Metric": ["Average Power", "Max Power", "Normalized Power", "Variability Index", 
                                      "Power Zones", "Power Distribution"],
                             "Value": [
-                                f"{history.get('avg_power_W', 0):.0f}W",
-                                f"{history.get('max_power_W', 0):.0f}W", 
-                                f"{history.get('NP_W', 0):.0f}W",
-                                f"{history.get('VI', 0):.2f}",
+                                f"{history.get('avg_power_W', 0):.0f}W" if history.get('avg_power_W') is not None else "N/A",
+                                f"{history.get('max_power_W', 0):.0f}W" if history.get('max_power_W') is not None else "N/A", 
+                                f"{history.get('NP_W', 0):.0f}W" if history.get('NP_W') is not None else "N/A",
+                                f"{history.get('VI', 0):.2f}" if history.get('VI') is not None else "N/A",
                                 "See chart below",
                                 "See distribution below"
                             ]
@@ -315,8 +315,8 @@ def main():
                             "Metric": ["Training Stress Score", "Intensity Factor", "Lactate Threshold", 
                                      "Critical Power", "W' Balance", "Recovery Time"],
                             "Value": [
-                                f"{history.get('TSS', 0):.0f}",
-                                f"{history.get('IF', 0)*100:.1f}%",
+                                f"{history.get('TSS', 0):.0f}" if history.get('TSS') is not None else "N/A",
+                                f"{history.get('IF', 0)*100:.1f}%" if history.get('IF') is not None else "N/A",
                                 "Estimated from power curve",
                                 "Calculated from MMP",
                                 "See W' balance chart",
@@ -327,13 +327,17 @@ def main():
                     
                     with col2:
                         st.markdown("**❤️ Heart Rate Analysis**")
+                        avg_hr = history.get('avg_hr')
+                        max_hr = history.get('max_hr')
+                        hr_reserve = ((max_hr - 51) / (195 - 51) * 100) if avg_hr is not None and max_hr is not None else None
+                        
                         hr_data = {
                             "Metric": ["Average HR", "Max HR", "HR Reserve", "HR Variability", 
                                      "HR Zones", "Cardiac Drift"],
                             "Value": [
-                                f"{history.get('avg_hr', 0):.0f} bpm",
-                                f"{history.get('max_hr', 0):.0f} bpm",
-                                f"{((history.get('max_hr', 0) - 51) / (195 - 51) * 100):.1f}%",
+                                f"{avg_hr:.0f} bpm" if avg_hr is not None else "N/A",
+                                f"{max_hr:.0f} bpm" if max_hr is not None else "N/A",
+                                f"{hr_reserve:.1f}%" if hr_reserve is not None else "N/A",
                                 "See HR analysis",
                                 "See zone distribution",
                                 "See fatigue patterns"
@@ -348,9 +352,9 @@ def main():
                             "Value": [
                                 format_duration(history.get('duration_min', 0)),
                                 format_distance(history.get('distance_km', 0)),
-                                f"{history.get('avg_speed_kmh', 0):.1f} km/h",
-                                f"{history.get('max_speed_kmh', 0):.1f} km/h",
-                                f"{history.get('calories', 0):.0f} kJ",
+                                f"{history.get('avg_speed_kmh', 0):.1f} km/h" if history.get('avg_speed_kmh') is not None else "N/A",
+                                f"{history.get('max_speed_kmh', 0):.1f} km/h" if history.get('max_speed_kmh') is not None else "N/A",
+                                f"{history.get('calories', 0):.0f} kJ" if history.get('calories') is not None else "N/A",
                                 "See power-HR efficiency"
                             ]
                         }

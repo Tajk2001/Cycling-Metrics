@@ -296,14 +296,25 @@ def main():
                     
                     with col1:
                         st.markdown("**💪 Power Analysis**")
+                        
+                        def safe_format_power(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value):.0f}W"
+                        
+                        def safe_format_vi(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value):.2f}"
+                        
                         power_data = {
                             "Metric": ["Average Power", "Max Power", "Normalized Power", "Variability Index", 
                                      "Power Zones", "Power Distribution"],
                             "Value": [
-                                f"{history.get('avg_power_W', 0):.0f}W" if history.get('avg_power_W') is not None else "N/A",
-                                f"{history.get('max_power_W', 0):.0f}W" if history.get('max_power_W') is not None else "N/A", 
-                                f"{history.get('NP_W', 0):.0f}W" if history.get('NP_W') is not None else "N/A",
-                                f"{history.get('VI', 0):.2f}" if history.get('VI') is not None else "N/A",
+                                safe_format_power(history.get('avg_power_W')),
+                                safe_format_power(history.get('max_power_W')), 
+                                safe_format_power(history.get('NP_W')),
+                                safe_format_vi(history.get('VI')),
                                 "See chart below",
                                 "See distribution below"
                             ]
@@ -311,12 +322,23 @@ def main():
                         st.dataframe(pd.DataFrame(power_data), use_container_width=True)
                         
                         st.markdown("**🩸 Physiological Metrics**")
+                        
+                        def safe_format_tss(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value):.0f}"
+                        
+                        def safe_format_if(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value)*100:.1f}%"
+                        
                         phys_data = {
                             "Metric": ["Training Stress Score", "Intensity Factor", "Lactate Threshold", 
                                      "Critical Power", "W' Balance", "Recovery Time"],
                             "Value": [
-                                f"{history.get('TSS', 0):.0f}" if history.get('TSS') is not None else "N/A",
-                                f"{history.get('IF', 0)*100:.1f}%" if history.get('IF') is not None else "N/A",
+                                safe_format_tss(history.get('TSS')),
+                                safe_format_if(history.get('IF')),
                                 "Estimated from power curve",
                                 "Calculated from MMP",
                                 "See W' balance chart",
@@ -327,17 +349,29 @@ def main():
                     
                     with col2:
                         st.markdown("**❤️ Heart Rate Analysis**")
+                        
+                        def safe_format_hr(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value):.0f} bpm"
+                        
                         avg_hr = history.get('avg_hr')
                         max_hr = history.get('max_hr')
-                        hr_reserve = ((max_hr - 51) / (195 - 51) * 100) if avg_hr is not None and max_hr is not None else None
+                        
+                        # Calculate HR reserve safely
+                        if avg_hr is not None and max_hr is not None and not pd.isna(avg_hr) and not pd.isna(max_hr):
+                            hr_reserve = ((float(max_hr) - 51) / (195 - 51) * 100)
+                            hr_reserve_str = f"{hr_reserve:.1f}%"
+                        else:
+                            hr_reserve_str = "N/A"
                         
                         hr_data = {
                             "Metric": ["Average HR", "Max HR", "HR Reserve", "HR Variability", 
                                      "HR Zones", "Cardiac Drift"],
                             "Value": [
-                                f"{avg_hr:.0f} bpm" if avg_hr is not None else "N/A",
-                                f"{max_hr:.0f} bpm" if max_hr is not None else "N/A",
-                                f"{hr_reserve:.1f}%" if hr_reserve is not None else "N/A",
+                                safe_format_hr(avg_hr),
+                                safe_format_hr(max_hr),
+                                hr_reserve_str,
                                 "See HR analysis",
                                 "See zone distribution",
                                 "See fatigue patterns"
@@ -346,15 +380,26 @@ def main():
                         st.dataframe(pd.DataFrame(hr_data), use_container_width=True)
                         
                         st.markdown("**📊 Performance Metrics**")
+                        
+                        def safe_format_speed(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value):.1f} km/h"
+                        
+                        def safe_format_calories(value):
+                            if value is None or pd.isna(value):
+                                return "N/A"
+                            return f"{float(value):.0f} kJ"
+                        
                         perf_data = {
                             "Metric": ["Duration", "Distance", "Average Speed", "Max Speed",
                                      "Total Work", "Efficiency"],
                             "Value": [
                                 format_duration(history.get('duration_min', 0)),
                                 format_distance(history.get('distance_km', 0)),
-                                f"{history.get('avg_speed_kmh', 0):.1f} km/h" if history.get('avg_speed_kmh') is not None else "N/A",
-                                f"{history.get('max_speed_kmh', 0):.1f} km/h" if history.get('max_speed_kmh') is not None else "N/A",
-                                f"{history.get('calories', 0):.0f} kJ" if history.get('calories') is not None else "N/A",
+                                safe_format_speed(history.get('avg_speed_kmh')),
+                                safe_format_speed(history.get('max_speed_kmh')),
+                                safe_format_calories(history.get('calories')),
                                 "See power-HR efficiency"
                             ]
                         }

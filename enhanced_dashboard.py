@@ -396,7 +396,8 @@ def main():
                                 analyzer = CyclingAnalyzer(
                                     save_figures=save_figures, 
                                     ftp=ftp, 
-                                    save_dir="figures"
+                                    save_dir="figures",
+                                    analysis_id=selected_ride
                                 )
                                 
                                 if analyzer.load_fit_file(file_path):

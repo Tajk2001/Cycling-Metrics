@@ -43,7 +43,7 @@ class CyclingAnalyzer:
                  weight_kg=52, height_cm=165, lactate_rest=1.2, lactate_peak=8.0,
                  w_prime_tau=386, max_interpolation_pct=5.0, power_outlier_threshold=5.0,
                  hr_outlier_threshold=3.0, cadence_outlier_threshold=3.0,
-                 save_figures=False, save_dir="figures"):
+                 save_figures=False, save_dir="figures", analysis_id=None):
         """Initialize analyzer with enhanced athlete profile and data quality parameters."""
         self.athlete_name = athlete_name
         self.ftp = ftp
@@ -111,6 +111,7 @@ class CyclingAnalyzer:
         # Global figure saving options
         self.save_figures = save_figures
         self.save_dir = save_dir
+        self.analysis_id = analysis_id or athlete_name  # Use analysis_id for figure naming
         if self.save_figures:
             os.makedirs(self.save_dir, exist_ok=True)
         # Global color palette for zones (Z1-Z7)
@@ -675,7 +676,7 @@ class CyclingAnalyzer:
             axes[2].set_axis_off()
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_dashboard")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_dashboard")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -780,7 +781,7 @@ class CyclingAnalyzer:
         
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_w_prime_balance")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_w_prime_balance")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -1238,7 +1239,7 @@ class CyclingAnalyzer:
         
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_heat_stress")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_heat_stress")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -1440,7 +1441,7 @@ class CyclingAnalyzer:
         
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_power_hr_efficiency")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_power_hr_efficiency")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -1661,7 +1662,7 @@ class CyclingAnalyzer:
         
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_fatigue_patterns")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_fatigue_patterns")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -1863,7 +1864,7 @@ class CyclingAnalyzer:
         
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_variable_relationships")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_variable_relationships")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -2096,7 +2097,7 @@ class CyclingAnalyzer:
             ax2.set_xlim(0, max_power + 10)
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_lactate")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_lactate")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -2143,7 +2144,7 @@ class CyclingAnalyzer:
 
         plt.tight_layout()
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.athlete_name}_torque")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_torque")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
         plt.show()
@@ -2237,7 +2238,11 @@ def main():
         return
     
     print(f"🚴 Loading FIT file: {args.file_path}")
-    analyzer = CyclingAnalyzer(save_figures=args.save_figures, ftp=args.ftp)
+    
+    # Extract analysis_id from filename
+    analysis_id = args.file_path.split("/")[-1].replace(".fit", "")
+    
+    analyzer = CyclingAnalyzer(save_figures=args.save_figures, ftp=args.ftp, analysis_id=analysis_id)
     
     if analyzer.load_fit_file(args.file_path):
         print("✅ FIT file loaded successfully!")

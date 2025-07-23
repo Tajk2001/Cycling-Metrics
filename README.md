@@ -26,6 +26,7 @@ streamlit run enhanced_dashboard.py
 - **📈 Ride History**: View existing rides and data
 - **🔍 Re-analyze**: Re-run analysis on existing rides
 - **⚙️ System Info**: System status and data management
+- **🗑️ Ride Management**: Delete individual rides or clear all data
 
 ## 🎯 Usage
 
@@ -34,6 +35,19 @@ streamlit run enhanced_dashboard.py
 3. **Choose analysis type** (Basic/Advanced/Both)
 4. **View results** immediately
 5. **Re-analyze** existing rides as needed
+6. **Delete rides** when no longer needed
+
+## 🗑️ Ride Management
+
+### Delete Individual Ride
+- **Ride History tab**: Select a ride and click "Delete This Ride"
+- **System Info tab**: Use the "Delete Specific Ride" section
+- **Confirmation required** to prevent accidental deletion
+
+### Clear All Rides
+- **System Info tab**: Use the "Clear All Rides" section
+- **Double confirmation** required for safety
+- **Automatic backup** created before clearing
 
 ## 📁 File Structure
 
@@ -63,6 +77,11 @@ Upload the FIT file in "Upload & Analyze" tab first.
 
 ### Data issues
 Check "System Info" tab for status and use export/import features.
+
+### Delete functionality
+- Individual rides: Use Ride History or System Info tabs
+- Clear all: Use System Info tab with double confirmation
+- Backups: Automatically created before clearing all rides
 
 ## 📖 Documentation
 

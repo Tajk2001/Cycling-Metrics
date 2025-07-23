@@ -679,7 +679,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_dashboard")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
     
     def estimate_critical_power(self):
         """Estimate Critical Power and W'."""
@@ -784,7 +785,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_w_prime_balance")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
         
         # Print W' balance statistics
         print(f"\n=== W' BALANCE ANALYSIS ===")
@@ -984,7 +986,12 @@ class CyclingAnalyzer:
         ax4.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
         
         plt.tight_layout()
-        plt.show()
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_hr_strain")
+            fig.savefig(fig_path + ".png", dpi=300)
+            fig.savefig(fig_path + ".svg")
+        else:
+            plt.show()
         
         # Print practical HR analysis
         print(f"\n=== HR TRAINING LOAD ANALYSIS (Practical Metrics) ===")
@@ -1242,7 +1249,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_heat_stress")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
         
         # Print heat stress analysis
         print(f"\n=== HEAT STRESS ANALYSIS ===")
@@ -1444,7 +1452,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_power_hr_efficiency")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
         
         # Print enhanced efficiency analysis
         print(f"\n=== ENHANCED POWER-TO-HR EFFICIENCY ANALYSIS ===")
@@ -1665,7 +1674,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_fatigue_patterns")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
         
         # Print enhanced fatigue analysis
         print(f"\n=== Enhanced Fatigue & Drift Analysis (15 Segments) ===")
@@ -1867,7 +1877,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_variable_relationships")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
         
         # Print relationship analysis
         print(f"\n=== VARIABLE RELATIONSHIP ANALYSIS (with Elevation/Grade) ===")
@@ -2100,7 +2111,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_lactate")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
 
         # Print lactate statistics
         print(f"\n=== LACTATE ANALYSIS ===")
@@ -2147,7 +2159,8 @@ class CyclingAnalyzer:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_torque")
             fig.savefig(fig_path + ".png", dpi=300)
             fig.savefig(fig_path + ".svg")
-        plt.show()
+        else:
+            plt.show()
 
     def print_insights(self):
         """Print performance insights and recommendations."""

@@ -165,8 +165,20 @@ def main():
                                     if analyzer.load_fit_file(file_path):
                                         analyzer.clean_and_smooth_data()
                                         analyzer.calculate_metrics()
+                                        
+                                        # Run comprehensive analysis
                                         analyzer.print_summary()
                                         analyzer.create_dashboard()
+                                        analyzer.analyze_fatigue_patterns()
+                                        analyzer.analyze_heat_stress()
+                                        analyzer.analyze_power_hr_efficiency()
+                                        analyzer.analyze_variable_relationships()
+                                        analyzer.analyze_torque()
+                                        analyzer.calculate_w_prime_balance(
+                                            analyzer.estimate_critical_power()[0],
+                                            analyzer.estimate_critical_power()[1]
+                                        )
+                                        analyzer.estimate_lactate()
                                         
                                         # Save results
                                         data_manager.save_analysis_results(
@@ -197,8 +209,20 @@ def main():
                                     if analyzer.load_fit_file(file_path):
                                         analyzer.clean_and_smooth_data()
                                         analyzer.calculate_metrics()
+                                        
+                                        # Run comprehensive analysis
                                         analyzer.print_summary()
                                         analyzer.create_dashboard()
+                                        analyzer.analyze_fatigue_patterns()
+                                        analyzer.analyze_heat_stress()
+                                        analyzer.analyze_power_hr_efficiency()
+                                        analyzer.analyze_variable_relationships()
+                                        analyzer.analyze_torque()
+                                        analyzer.calculate_w_prime_balance(
+                                            analyzer.estimate_critical_power()[0],
+                                            analyzer.estimate_critical_power()[1]
+                                        )
+                                        analyzer.estimate_lactate()
                                         
                                         # Save results
                                         data_manager.save_analysis_results(
@@ -230,29 +254,39 @@ def main():
             if selected_ride_results:
                 ride_data = data_manager.get_ride_data(selected_ride_results)
                 
-                # Show basic metrics
+                # Show comprehensive metrics
                 if ride_data['in_history'] and ride_data['history_data']:
                     history = ride_data['history_data']
+                    
+                    st.subheader("📊 Performance Metrics")
                     
                     col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
                         st.metric("Duration", format_duration(history.get('duration_min', 0)))
                         st.metric("Distance", format_distance(history.get('distance_km', 0)))
+                        st.metric("Avg Speed", f"{history.get('avg_speed_kmh', 0):.1f} km/h")
+                        st.metric("Max Speed", f"{history.get('max_speed_kmh', 0):.1f} km/h")
                     
                     with col2:
                         st.metric("Avg Power", format_power(history.get('avg_power_W', 0)))
                         st.metric("Max Power", format_power(history.get('max_power_W', 0)))
+                        st.metric("NP", format_power(history.get('NP_W', 0)))
+                        st.metric("VI", f"{history.get('VI', 0):.2f}")
                     
                     with col3:
                         st.metric("TSS", f"{history.get('TSS', 0):.0f}")
                         st.metric("IF", f"{history.get('IF', 0)*100:.1f}%")
-                    
-                    with col4:
                         st.metric("Avg HR", f"{history.get('avg_hr', 0):.0f} bpm")
                         st.metric("Max HR", f"{history.get('max_hr', 0):.0f} bpm")
+                    
+                    with col4:
+                        st.metric("Calories", f"{history.get('calories', 0):.0f}")
+                        st.metric("Elevation", f"{history.get('total_elevation_m', 0):.0f}m")
+                        st.metric("Avg Cadence", f"{history.get('avg_cadence', 0):.0f} rpm")
+                        st.metric("Max Cadence", f"{history.get('max_cadence', 0):.0f} rpm")
                 
-                # Show figures
+                # Show comprehensive analysis figures
                 st.markdown("---")
                 st.subheader("📊 Analysis Figures")
                 
@@ -265,7 +299,7 @@ def main():
                             ride_figures.append(figure_file)
                 
                 if ride_figures:
-                    # Group figures by type
+                    # Group figures by type and display in organized sections
                     figure_types = {}
                     for fig in ride_figures:
                         fig_name = fig.stem.replace(f"{selected_ride_results}_", "")
@@ -273,16 +307,67 @@ def main():
                             figure_types[fig_name] = []
                         figure_types[fig_name].append(fig)
                     
-                    # Display figures
-                    for fig_type, figures in figure_types.items():
-                        st.markdown(f"**{fig_type.replace('_', ' ').title()}**")
-                        
-                        cols = st.columns(min(len(figures), 2))
-                        for i, fig in enumerate(figures):
-                            with cols[i % len(cols)]:
-                                st.image(str(fig), caption=fig.name, use_column_width=True)
-                        
+                    # Display figures in organized sections
+                    if 'dashboard' in figure_types:
+                        st.markdown("**📈 Main Dashboard**")
+                        for fig in figure_types['dashboard']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
                         st.markdown("---")
+                    
+                    if 'fatigue_patterns' in figure_types:
+                        st.markdown("**🔄 Fatigue Analysis**")
+                        for fig in figure_types['fatigue_patterns']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    if 'heat_stress' in figure_types:
+                        st.markdown("**🌡️ Heat Stress Analysis**")
+                        for fig in figure_types['heat_stress']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    if 'power_hr_efficiency' in figure_types:
+                        st.markdown("**💪 Power-HR Efficiency**")
+                        for fig in figure_types['power_hr_efficiency']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    if 'variable_relationships' in figure_types:
+                        st.markdown("**📊 Variable Relationships**")
+                        for fig in figure_types['variable_relationships']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    if 'torque' in figure_types:
+                        st.markdown("**⚙️ Torque Analysis**")
+                        for fig in figure_types['torque']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    if 'lactate' in figure_types:
+                        st.markdown("**🩸 Lactate Estimation**")
+                        for fig in figure_types['lactate']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    if 'w_prime_balance' in figure_types:
+                        st.markdown("**⚡ W' Balance Analysis**")
+                        for fig in figure_types['w_prime_balance']:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                    
+                    # Show any remaining figures
+                    remaining_types = [k for k in figure_types.keys() if k not in [
+                        'dashboard', 'fatigue_patterns', 'heat_stress', 'power_hr_efficiency',
+                        'variable_relationships', 'torque', 'lactate', 'w_prime_balance'
+                    ]]
+                    
+                    for fig_type in remaining_types:
+                        st.markdown(f"**{fig_type.replace('_', ' ').title()}**")
+                        for fig in figure_types[fig_type]:
+                            st.image(str(fig), caption=fig.name, use_column_width=True)
+                        st.markdown("---")
+                        
                 else:
                     st.info("No analysis figures found. Run analysis first.")
                 

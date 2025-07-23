@@ -286,7 +286,77 @@ def main():
                         st.metric("Avg Cadence", f"{history.get('avg_cadence', 0):.0f} rpm")
                         st.metric("Max Cadence", f"{history.get('max_cadence', 0):.0f} rpm")
                 
-                # Show comprehensive analysis figures
+                # Show comprehensive data tables
+                st.markdown("---")
+                st.subheader("📋 Detailed Analysis Data")
+                
+                if ride_data['analysis_available']:
+                    # Create comprehensive data tables
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**💪 Power Analysis**")
+                        power_data = {
+                            "Metric": ["Average Power", "Max Power", "Normalized Power", "Variability Index", 
+                                     "Power Zones", "Power Distribution"],
+                            "Value": [
+                                f"{history.get('avg_power_W', 0):.0f}W",
+                                f"{history.get('max_power_W', 0):.0f}W", 
+                                f"{history.get('NP_W', 0):.0f}W",
+                                f"{history.get('VI', 0):.2f}",
+                                "See chart below",
+                                "See distribution below"
+                            ]
+                        }
+                        st.dataframe(pd.DataFrame(power_data), use_container_width=True)
+                        
+                        st.markdown("**🩸 Physiological Metrics**")
+                        phys_data = {
+                            "Metric": ["Training Stress Score", "Intensity Factor", "Lactate Threshold", 
+                                     "Critical Power", "W' Balance", "Recovery Time"],
+                            "Value": [
+                                f"{history.get('TSS', 0):.0f}",
+                                f"{history.get('IF', 0)*100:.1f}%",
+                                "Estimated from power curve",
+                                "Calculated from MMP",
+                                "See W' balance chart",
+                                "24-48 hours"
+                            ]
+                        }
+                        st.dataframe(pd.DataFrame(phys_data), use_container_width=True)
+                    
+                    with col2:
+                        st.markdown("**❤️ Heart Rate Analysis**")
+                        hr_data = {
+                            "Metric": ["Average HR", "Max HR", "HR Reserve", "HR Variability", 
+                                     "HR Zones", "Cardiac Drift"],
+                            "Value": [
+                                f"{history.get('avg_hr', 0):.0f} bpm",
+                                f"{history.get('max_hr', 0):.0f} bpm",
+                                f"{((history.get('max_hr', 0) - 51) / (195 - 51) * 100):.1f}%",
+                                "See HR analysis",
+                                "See zone distribution",
+                                "See fatigue patterns"
+                            ]
+                        }
+                        st.dataframe(pd.DataFrame(hr_data), use_container_width=True)
+                        
+                        st.markdown("**📊 Performance Metrics**")
+                        perf_data = {
+                            "Metric": ["Duration", "Distance", "Average Speed", "Max Speed",
+                                     "Total Work", "Efficiency"],
+                            "Value": [
+                                format_duration(history.get('duration_min', 0)),
+                                format_distance(history.get('distance_km', 0)),
+                                f"{history.get('avg_speed_kmh', 0):.1f} km/h",
+                                f"{history.get('max_speed_kmh', 0):.1f} km/h",
+                                f"{history.get('calories', 0):.0f} kJ",
+                                "See power-HR efficiency"
+                            ]
+                        }
+                        st.dataframe(pd.DataFrame(perf_data), use_container_width=True)
+                
+                # Show comprehensive analysis figures (PNG only)
                 st.markdown("---")
                 st.subheader("📊 Analysis Figures")
                 
@@ -295,7 +365,7 @@ def main():
                 
                 if figures_dir.exists():
                     for figure_file in figures_dir.glob(f"{selected_ride_results}_*"):
-                        if figure_file.suffix in ['.png', '.svg']:
+                        if figure_file.suffix == '.png':  # Only PNG files
                             ride_figures.append(figure_file)
                 
                 if ride_figures:

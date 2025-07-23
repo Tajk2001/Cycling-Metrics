@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import pathlib
 from datetime import datetime
 from data_manager import CyclingDataManager
-from app import run_basic_analysis
 from enhanced_cycling_analysis import CyclingAnalyzer
 
 # Page configuration
@@ -329,8 +328,8 @@ def main():
             with col2:
                 analysis_type = st.selectbox(
                     "Analysis Type",
-                    ["Basic", "Advanced", "Both"],
-                    help="Basic: Core metrics. Advanced: Detailed physiological analysis. Both: Complete analysis."
+                    ["Advanced"],
+                    help="Advanced: Comprehensive physiological analysis including power zones, HR analysis, fatigue patterns, heat stress, W' balance, lactate estimation, and detailed visualizations."
                 )
             
             if selected_ride:
@@ -363,35 +362,10 @@ def main():
                         status_text = st.empty()
                         
                         try:
-                            # Basic Analysis
-                            if analysis_type in ["Basic", "Both"]:
-                                status_text.text("Running basic analysis...")
-                                progress_bar.progress(25)
-                                
-                                results, df = run_basic_analysis(
-                                    file_path, 
-                                    ftp=ftp, 
-                                    lthr=lthr, 
-                                    save_figures=save_figures, 
-                                    analysis_id=selected_ride
-                                )
-                                
-                                if results:
-                                    # Save results
-                                    data_manager.save_analysis_results(
-                                        selected_ride, "Basic", results, ftp, lthr
-                                    )
-                                    
-                                    # Display results
-                                    st.success("✅ Basic analysis completed!")
-                                    display_basic_results(results)
-                                else:
-                                    st.error("❌ Basic analysis failed")
-                            
                             # Advanced Analysis
-                            if analysis_type in ["Advanced", "Both"]:
+                            if analysis_type in ["Advanced"]:
                                 status_text.text("Running advanced analysis...")
-                                progress_bar.progress(75)
+                                progress_bar.progress(50)
                                 
                                 analyzer = CyclingAnalyzer(
                                     save_figures=save_figures, 
@@ -463,7 +437,7 @@ def main():
                 # Detailed metrics display
                 if ride_data['in_history'] and ride_data['history_data']:
                     st.markdown("---")
-                    st.subheader("📋 Detailed Metrics")
+                    st.subheader("�� Detailed Metrics")
                     
                     history = ride_data['history_data']
                     
@@ -583,35 +557,6 @@ def main():
             st.dataframe(registry_df, use_container_width=True)
         else:
             st.info("No files in registry")
-
-def display_basic_results(results):
-    """Display basic analysis results in a clean format."""
-    if not results:
-        return
-    
-    # Session Summary
-    if 'summary' in results:
-        st.subheader("📈 Session Summary")
-        summary_df = pd.DataFrame.from_dict(results['summary'], orient='index', columns=['Value'])
-        st.dataframe(summary_df, use_container_width=True)
-    
-    # Advanced Metrics
-    if 'advanced_metrics' in results:
-        st.subheader("🎯 Advanced Metrics")
-        advanced_df = pd.DataFrame.from_dict(results['advanced_metrics'], orient='index', columns=['Value'])
-        st.dataframe(advanced_df, use_container_width=True)
-    
-    # Power Zones
-    if 'zone_df' in results and results['zone_df'] is not None:
-        st.subheader("⚡ Power Zone Distribution")
-        st.dataframe(results['zone_df'], use_container_width=True)
-        st.bar_chart(results['zone_df'].set_index('Zone')['Percentage (%)'])
-    
-    # HR Zones
-    if 'hr_zone_df' in results and results['hr_zone_df'] is not None:
-        st.subheader("❤️ HR Zone Distribution")
-        st.dataframe(results['hr_zone_df'], use_container_width=True)
-        st.bar_chart(results['hr_zone_df'].set_index('Zone')['Percentage (%)'])
 
 if __name__ == "__main__":
     main() 

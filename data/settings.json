@@ -1,0 +1,10 @@
+{
+  "migration_date": "2025-07-22T18:43:25.561666",
+  "version": "2.0.0",
+  "data_structure": "organized",
+  "directories": {
+    "data": "data",
+    "cache": "cache",
+    "figures": "figures"
+  }
+}

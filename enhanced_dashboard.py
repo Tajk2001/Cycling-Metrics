@@ -10,7 +10,7 @@ from enhanced_cycling_analysis import CyclingAnalyzer
 
 # Page configuration
 st.set_page_config(
-    page_title="Enhanced Cycling Analysis Dashboard",
+    page_title="Cycling Performance Analysis",
     layout="wide",
     page_icon="🚴",
     initial_sidebar_state="expanded"
@@ -62,7 +62,7 @@ def format_percentage(value):
 
 # Main dashboard
 def main():
-    st.title("🚴 Enhanced Cycling Analysis Dashboard")
+    st.title("🚴 Cycling Performance Analysis")
     st.markdown("---")
     
     # Sidebar configuration
@@ -81,7 +81,7 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Total Rides", status['total_rides'])
+            st.metric("Activities", status['total_rides'])
             st.metric("Cached Files", status['cached_files'])
         with col2:
             st.metric("History Entries", status['history_entries'])
@@ -104,19 +104,104 @@ def main():
             else:
                 st.error("Failed to save data")
     
-    # Main content tabs
+    # Main content tabs - Professional structure
     tab1, tab2, tab3, tab4 = st.tabs([
-        "📁 Upload", 
-        "📊 Analyze", 
-        "📈 Data & Figures", 
+        "📊 Overview", 
+        "📁 Activities", 
+        "📈 Analysis", 
         "⚙️ Settings"
     ])
     
-    # Tab 1: Upload
+    # Tab 1: Overview (Dashboard)
     with tab1:
-        st.header("📁 Upload FIT Files")
+        st.header("📊 Performance Overview")
+        
+        available_rides = data_manager.get_available_rides()
+        
+        if not available_rides:
+            st.info("No activities available. Upload FIT files to get started.")
+        else:
+            # Summary statistics
+            st.subheader("📈 Summary Statistics")
+            
+            # Calculate summary stats from all rides
+            all_rides_data = []
+            for ride in available_rides:
+                ride_data = data_manager.get_ride_data(ride)
+                if ride_data['in_history'] and ride_data['history_data']:
+                    all_rides_data.append(ride_data['history_data'])
+            
+            if all_rides_data:
+                # Create summary dataframe
+                summary_df = pd.DataFrame(all_rides_data)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Total Activities", len(all_rides_data))
+                    st.metric("Total Distance", f"{summary_df['distance_km'].sum():.1f} km")
+                
+                with col2:
+                    st.metric("Total Duration", format_duration(summary_df['duration_min'].sum()))
+                    st.metric("Total TSS", f"{summary_df['TSS'].sum():.0f}")
+                
+                with col3:
+                    st.metric("Avg Power", format_power(summary_df['avg_power_W'].mean()))
+                    st.metric("Max Power", format_power(summary_df['max_power_W'].max()))
+                
+                with col4:
+                    st.metric("Avg HR", f"{summary_df['avg_hr'].mean():.0f} bpm")
+                    st.metric("Total Elevation", f"{summary_df['total_elevation_m'].sum():.0f}m")
+            
+            # Recent activities
+            st.markdown("---")
+            st.subheader("🕒 Recent Activities")
+            
+            # Show last 5 activities
+            recent_rides = available_rides[-5:] if len(available_rides) > 5 else available_rides
+            
+            for ride in reversed(recent_rides):
+                ride_data = data_manager.get_ride_data(ride)
+                
+                col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+                
+                with col1:
+                    st.write(f"**{ride}**")
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.caption(f"{format_duration(history.get('duration_min', 0))} • "
+                                 f"{format_distance(history.get('distance_km', 0))} • "
+                                 f"{format_power(history.get('avg_power_W', 0))}")
+                
+                with col2:
+                    if ride_data['has_fit_file']:
+                        st.success("✅")
+                    else:
+                        st.error("❌")
+                
+                with col3:
+                    if ride_data['analysis_available']:
+                        st.success("✅")
+                    else:
+                        st.info("⏳")
+                
+                with col4:
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("TSS", f"{history.get('TSS', 0):.0f}")
+                
+                with col5:
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("IF", f"{history.get('IF', 0)*100:.1f}%")
+    
+    # Tab 2: Activities (File Management)
+    with tab2:
+        st.header("📁 Activity Management")
         
         # File upload section
+        st.subheader("📤 Upload New Activity")
+        
         uploaded_file = st.file_uploader(
             "Choose a .fit file", 
             type=["fit"], 
@@ -132,66 +217,121 @@ def main():
                 st.metric("File Size", f"{uploaded_file.size / 1024:.1f} KB")
             with col3:
                 ride_id = data_manager._generate_ride_id(uploaded_file.name)
-                st.metric("Ride ID", ride_id)
+                st.metric("Activity ID", ride_id)
             
             # Upload button
-            if st.button("📤 Upload File", type="primary"):
-                with st.spinner("Uploading file..."):
+            if st.button("📤 Upload Activity", type="primary"):
+                with st.spinner("Uploading activity..."):
                     success, message, file_path = data_manager.upload_fit_file(uploaded_file)
                     
                     if success:
                         st.success(message)
-                        st.info("✅ File uploaded successfully! Switch to 'Analyze' tab to run analysis.")
+                        st.info("✅ Activity uploaded successfully! Switch to 'Analysis' tab to analyze.")
                     else:
                         st.error(message)
         
-        # Show uploaded files
+        # Activity list
         st.markdown("---")
-        st.subheader("📋 Uploaded Files")
-        
-        available_rides = data_manager.get_available_rides()
-        if available_rides:
-            for ride in available_rides:
-                ride_data = data_manager.get_ride_data(ride)
-                col1, col2, col3 = st.columns([3, 1, 1])
-                
-                with col1:
-                    st.write(f"**{ride}**")
-                    if ride_data['in_history'] and ride_data['history_data']:
-                        history = ride_data['history_data']
-                        st.caption(f"Duration: {format_duration(history.get('duration_min', 0))} | "
-                                 f"Distance: {format_distance(history.get('distance_km', 0))} | "
-                                 f"Avg Power: {format_power(history.get('avg_power_W', 0))}")
-                
-                with col2:
-                    if ride_data['has_fit_file']:
-                        st.success("✅ FIT")
-                    else:
-                        st.error("❌ Missing")
-                
-                with col3:
-                    if ride_data['analysis_available']:
-                        st.success("✅ Analyzed")
-                    else:
-                        st.info("⏳ Pending")
-        else:
-            st.info("No files uploaded yet. Upload a FIT file to get started.")
-    
-    # Tab 2: Analyze
-    with tab2:
-        st.header("📊 Analyze Rides")
+        st.subheader("📋 Activity Library")
         
         available_rides = data_manager.get_available_rides()
         
         if not available_rides:
-            st.info("No rides available for analysis. Upload a FIT file in the 'Upload' tab first.")
+            st.info("No activities uploaded yet. Upload a FIT file to get started.")
         else:
-            # Ride selection
-            selected_ride = st.selectbox(
-                "Select a ride to analyze:",
+            # Activity selection for management
+            selected_activity = st.selectbox(
+                "Select an activity:",
                 available_rides,
-                help="Choose a ride from your uploaded files"
+                help="Choose an activity to view details or manage"
             )
+            
+            if selected_activity:
+                ride_data = data_manager.get_ride_data(selected_activity)
+                
+                # Activity details
+                st.markdown("---")
+                st.subheader(f"📊 Activity Details: {selected_activity}")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("FIT File", "✅ Available" if ride_data['has_fit_file'] else "❌ Missing")
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("Duration", format_duration(history.get('duration_min', 0)))
+                
+                with col2:
+                    st.metric("Analysis", "✅ Available" if ride_data['analysis_available'] else "❌ None")
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("Distance", format_distance(history.get('distance_km', 0)))
+                
+                with col3:
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("Avg Power", format_power(history.get('avg_power_W', 0)))
+                        st.metric("TSS", f"{history.get('TSS', 0):.0f}")
+                
+                with col4:
+                    if ride_data['in_history'] and ride_data['history_data']:
+                        history = ride_data['history_data']
+                        st.metric("IF", f"{history.get('IF', 0)*100:.1f}%")
+                        st.metric("VI", f"{history.get('VI', 0):.2f}")
+                
+                # Activity actions
+                st.markdown("---")
+                st.subheader("🔧 Activity Actions")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("📊 Analyze Activity", type="primary"):
+                        st.info("Switch to 'Analysis' tab to run analysis on this activity")
+                
+                with col2:
+                    # Confirmation for deletion
+                    confirm_delete = st.checkbox(
+                        "I understand this will permanently delete this activity and all associated data",
+                        key=f"confirm_delete_{selected_activity}"
+                    )
+                    
+                    if st.button("🗑️ Delete Activity", type="secondary", disabled=not confirm_delete):
+                        with st.spinner(f"Deleting {selected_activity}..."):
+                            success, message = data_manager.delete_ride(selected_activity)
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.warning(message)
+    
+    # Tab 3: Analysis (All Analysis Functions)
+    with tab3:
+        st.header("📈 Performance Analysis")
+        
+        available_rides = data_manager.get_available_rides()
+        
+        if not available_rides:
+            st.info("No activities available for analysis. Upload FIT files in the 'Activities' tab first.")
+        else:
+            # Analysis selection
+            st.subheader("🎯 Analysis Options")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                selected_ride = st.selectbox(
+                    "Select activity to analyze:",
+                    available_rides,
+                    help="Choose an activity to run analysis on"
+                )
+            
+            with col2:
+                analysis_type = st.selectbox(
+                    "Analysis Type",
+                    ["Basic", "Advanced", "Both"],
+                    help="Basic: Core metrics. Advanced: Detailed physiological analysis. Both: Complete analysis."
+                )
             
             if selected_ride:
                 ride_data = data_manager.get_ride_data(selected_ride)
@@ -203,20 +343,18 @@ def main():
                     st.success(f"✅ FIT file available for '{selected_ride}'")
                     
                     # Analysis options
-                    st.subheader("Analysis Options")
+                    st.markdown("---")
+                    st.subheader("⚙️ Analysis Settings")
                     
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        analysis_type = st.selectbox(
-                            "Analysis Type",
-                            ["Basic", "Advanced", "Both"],
-                            help="Basic: Core metrics. Advanced: Detailed physiological analysis. Both: Complete analysis."
-                        )
-                    
-                    with col2:
                         save_figures = st.checkbox("Save Figures", value=True, help="Save analysis figures to disk")
                     
+                    with col2:
+                        overwrite_existing = st.checkbox("Overwrite Existing Analysis", value=False, help="Replace existing analysis results")
+                    
+                    # Run analysis
                     if st.button("🚀 Run Analysis", type="primary"):
                         file_path = ride_data['fit_file_path']
                         
@@ -273,7 +411,7 @@ def main():
                                     )
                                     
                                     st.success("✅ Advanced analysis completed!")
-                                    st.info("📊 Check the 'Data & Figures' tab for detailed visualizations")
+                                    st.info("📊 Check the 'Analysis Results' section below for visualizations")
                                 else:
                                     st.error("❌ Advanced analysis failed")
                             
@@ -283,56 +421,45 @@ def main():
                         except Exception as e:
                             st.error(f"❌ Analysis failed: {str(e)}")
                             progress_bar.progress(0)
-    
-    # Tab 3: Data & Figures
-    with tab3:
-        st.header("📈 Data & Figures")
-        
-        available_rides = data_manager.get_available_rides()
-        
-        if not available_rides:
-            st.info("No rides available. Upload and analyze rides to see data and figures.")
-        else:
-            # Ride selection for viewing data
-            selected_ride_data = st.selectbox(
-                "Select a ride to view data and figures:",
-                available_rides,
-                help="Choose a ride to view its analysis results and figures"
-            )
-            
-            if selected_ride_data:
-                ride_data = data_manager.get_ride_data(selected_ride_data)
                 
-                # Display ride summary
-                st.subheader(f"📊 Ride Summary: {selected_ride_data}")
+                # Analysis Results Display
+                st.markdown("---")
+                st.subheader("📊 Analysis Results")
                 
-                col1, col2, col3, col4 = st.columns(4)
+                # Check for available figures
+                figures_dir = pathlib.Path("figures")
+                ride_figures = []
                 
-                with col1:
-                    st.metric("FIT File", "✅ Available" if ride_data['has_fit_file'] else "❌ Missing")
-                    if ride_data['in_history'] and ride_data['history_data']:
-                        history = ride_data['history_data']
-                        st.metric("Duration", format_duration(history.get('duration_min', 0)))
+                if figures_dir.exists():
+                    for figure_file in figures_dir.glob(f"{selected_ride}_*"):
+                        if figure_file.suffix in ['.png', '.svg']:
+                            ride_figures.append(figure_file)
                 
-                with col2:
-                    st.metric("Analysis", "✅ Available" if ride_data['analysis_available'] else "❌ None")
-                    if ride_data['in_history'] and ride_data['history_data']:
-                        history = ride_data['history_data']
-                        st.metric("Distance", format_distance(history.get('distance_km', 0)))
+                if ride_figures:
+                    st.success(f"✅ Found {len(ride_figures)} analysis figures")
+                    
+                    # Group figures by type
+                    figure_types = {}
+                    for fig in ride_figures:
+                        fig_name = fig.stem.replace(f"{selected_ride}_", "")
+                        if fig_name not in figure_types:
+                            figure_types[fig_name] = []
+                        figure_types[fig_name].append(fig)
+                    
+                    # Display figures by type
+                    for fig_type, figures in figure_types.items():
+                        st.markdown(f"**{fig_type.replace('_', ' ').title()}**")
+                        
+                        cols = st.columns(min(len(figures), 2))
+                        for i, fig in enumerate(figures):
+                            with cols[i % len(cols)]:
+                                st.image(str(fig), caption=fig.name, use_column_width=True)
+                        
+                        st.markdown("---")
+                else:
+                    st.info("No analysis figures found. Run analysis to generate visualizations.")
                 
-                with col3:
-                    if ride_data['in_history'] and ride_data['history_data']:
-                        history = ride_data['history_data']
-                        st.metric("Avg Power", format_power(history.get('avg_power_W', 0)))
-                        st.metric("NP", format_power(history.get('NP_W', 0)))
-                
-                with col4:
-                    if ride_data['in_history'] and ride_data['history_data']:
-                        history = ride_data['history_data']
-                        st.metric("IF", format_percentage(history.get('IF', 0) * 100))
-                        st.metric("TSS", format_number(history.get('TSS', 0)))
-                
-                # Display detailed history data
+                # Detailed metrics display
                 if ride_data['in_history'] and ride_data['history_data']:
                     st.markdown("---")
                     st.subheader("📋 Detailed Metrics")
@@ -369,112 +496,10 @@ def main():
                         st.metric("Elevation", f"{history.get('total_elevation_m', 0):.0f}m")
                         st.metric("Avg Speed", f"{history.get('avg_speed_kmh', 0):.1f} km/h")
                         st.metric("Max Speed", f"{history.get('max_speed_kmh', 0):.1f} km/h")
-                
-                # Display figures
-                st.markdown("---")
-                st.subheader("📊 Analysis Figures")
-                
-                # Check for available figures
-                figures_dir = pathlib.Path("figures")
-                ride_figures = []
-                
-                if figures_dir.exists():
-                    for figure_file in figures_dir.glob(f"{selected_ride_data}_*"):
-                        if figure_file.suffix in ['.png', '.svg']:
-                            ride_figures.append(figure_file)
-                
-                if ride_figures:
-                    st.success(f"✅ Found {len(ride_figures)} figures for this ride")
-                    
-                    # Group figures by type
-                    figure_types = {}
-                    for fig in ride_figures:
-                        fig_name = fig.stem.replace(f"{selected_ride_data}_", "")
-                        if fig_name not in figure_types:
-                            figure_types[fig_name] = []
-                        figure_types[fig_name].append(fig)
-                    
-                    # Display figures by type
-                    for fig_type, figures in figure_types.items():
-                        st.markdown(f"**{fig_type.replace('_', ' ').title()}**")
-                        
-                        cols = st.columns(min(len(figures), 2))
-                        for i, fig in enumerate(figures):
-                            with cols[i % len(cols)]:
-                                st.image(str(fig), caption=fig.name, use_column_width=True)
-                        
-                        st.markdown("---")
-                else:
-                    st.info("No figures found for this ride. Run analysis to generate figures.")
-                
-                # Re-analyze option
-                st.markdown("---")
-                st.subheader("🔄 Re-analyze This Ride")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    reanalysis_type = st.selectbox(
-                        "Analysis Type",
-                        ["Basic", "Advanced", "Both"],
-                        key="reanalysis_type"
-                    )
-                
-                with col2:
-                    reanalysis_save_figures = st.checkbox("Save Figures", value=True, key="reanalysis_save")
-                
-                if st.button("🔄 Run Re-analysis", type="primary"):
-                    if ride_data['has_fit_file']:
-                        file_path = ride_data['fit_file_path']
-                        
-                        with st.spinner(f"Re-analyzing {selected_ride_data}..."):
-                            try:
-                                # Basic re-analysis
-                                if reanalysis_type in ["Basic", "Both"]:
-                                    results, df = run_basic_analysis(
-                                        file_path, 
-                                        ftp=ftp, 
-                                        lthr=lthr, 
-                                        save_figures=reanalysis_save_figures, 
-                                        analysis_id=f"{selected_ride_data}_reanalysis"
-                                    )
-                                    
-                                    if results:
-                                        data_manager.save_analysis_results(
-                                            selected_ride_data, "Basic", results, ftp, lthr
-                                        )
-                                        st.success("✅ Basic re-analysis completed!")
-                                        st.rerun()  # Refresh to show new figures
-                                
-                                # Advanced re-analysis
-                                if reanalysis_type in ["Advanced", "Both"]:
-                                    analyzer = CyclingAnalyzer(
-                                        save_figures=reanalysis_save_figures, 
-                                        ftp=ftp, 
-                                        save_dir="figures"
-                                    )
-                                    
-                                    if analyzer.load_fit_file(file_path):
-                                        analyzer.clean_and_smooth_data()
-                                        analyzer.calculate_metrics()
-                                        analyzer.print_summary()
-                                        analyzer.create_dashboard()
-                                        
-                                        data_manager.save_analysis_results(
-                                            selected_ride_data, "Advanced", {"status": "completed"}, ftp, lthr
-                                        )
-                                        
-                                        st.success("✅ Advanced re-analysis completed!")
-                                        st.rerun()  # Refresh to show new figures
-                                
-                            except Exception as e:
-                                st.error(f"❌ Re-analysis failed: {str(e)}")
-                    else:
-                        st.error("❌ No FIT file available for re-analysis")
     
     # Tab 4: Settings
     with tab4:
-        st.header("⚙️ Settings & System Info")
+        st.header("⚙️ Settings & System")
         
         # System status
         status = data_manager.get_system_status()
@@ -483,7 +508,7 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("Total Rides", status['total_rides'])
+            st.metric("Total Activities", status['total_rides'])
             st.metric("Cached Files", status['cached_files'])
             st.metric("History Entries", status['history_entries'])
             st.metric("Analysis Entries", status['analysis_entries'])
@@ -511,73 +536,37 @@ def main():
             if st.button("📥 Import Data"):
                 st.info("Import functionality requires manual file placement in data directory")
         
-        # Ride management
+        # Clear all data
         st.markdown("---")
-        st.subheader("🗑️ Ride Management")
+        st.subheader("🗑️ Data Management")
         
-        # Get available rides for deletion
-        available_rides = data_manager.get_available_rides()
+        st.markdown("⚠️ **Warning**: This will delete ALL activities and data!")
         
-        if available_rides:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Delete Specific Ride**")
-                selected_ride_to_delete = st.selectbox(
-                    "Select ride to delete:",
-                    available_rides,
-                    key="delete_ride_select"
-                )
-                
-                # Confirmation checkbox for individual ride deletion
-                confirm_delete = st.checkbox(
-                    "I understand this will permanently delete this ride and all associated data",
-                    key="confirm_delete"
-                )
-                
-                if st.button("🗑️ Delete Selected Ride", type="secondary", disabled=not confirm_delete):
-                    with st.spinner(f"Deleting {selected_ride_to_delete}..."):
-                        success, message = data_manager.delete_ride(selected_ride_to_delete)
-                        if success:
-                            st.success(message)
-                            st.rerun()  # Refresh the page to update the list
-                        else:
-                            st.warning(message)
-                
-                if not confirm_delete:
-                    st.info("Please check the confirmation box above to enable deletion")
-            
-            with col2:
-                st.markdown("**Clear All Rides**")
-                st.markdown("⚠️ **Warning**: This will delete ALL rides and data!")
-                
-                # Confirmation checkboxes for clear all
-                confirm_clear_all = st.checkbox(
-                    "I understand this will permanently delete ALL rides and data",
-                    key="confirm_clear_all"
-                )
-                
-                confirm_clear_all_final = st.checkbox(
-                    "I am absolutely sure I want to delete everything",
-                    key="confirm_clear_all_final",
-                    disabled=not confirm_clear_all
-                )
-                
-                if st.button("🗑️ Clear All Rides", type="secondary", disabled=not (confirm_clear_all and confirm_clear_all_final)):
-                    with st.spinner("Clearing all rides..."):
-                        success, message = data_manager.clear_all_rides()
-                        if success:
-                            st.success(message)
-                            st.rerun()  # Refresh the page
-                        else:
-                            st.warning(message)
-                
-                if not confirm_clear_all:
-                    st.info("Please check the first confirmation box above")
-                elif not confirm_clear_all_final:
-                    st.info("Please check both confirmation boxes above")
-        else:
-            st.info("No rides available to delete")
+        # Confirmation checkboxes for clear all
+        confirm_clear_all = st.checkbox(
+            "I understand this will permanently delete ALL activities and data",
+            key="confirm_clear_all"
+        )
+        
+        confirm_clear_all_final = st.checkbox(
+            "I am absolutely sure I want to delete everything",
+            key="confirm_clear_all_final",
+            disabled=not confirm_clear_all
+        )
+        
+        if st.button("🗑️ Clear All Data", type="secondary", disabled=not (confirm_clear_all and confirm_clear_all_final)):
+            with st.spinner("Clearing all data..."):
+                success, message = data_manager.clear_all_rides()
+                if success:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.warning(message)
+        
+        if not confirm_clear_all:
+            st.info("Please check the first confirmation box above")
+        elif not confirm_clear_all_final:
+            st.info("Please check both confirmation boxes above")
         
         # File registry
         st.markdown("---")

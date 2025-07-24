@@ -15,7 +15,7 @@ import os
 import sys
 import argparse
 from pathlib import Path
-from enhanced_cycling_analysis import CyclingAnalyzer
+from analyzer import CyclingAnalyzer
 
 def main():
     """Main function implementing the comprehensive cycling analysis pipeline"""

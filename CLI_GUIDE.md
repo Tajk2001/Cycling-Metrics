@@ -13,20 +13,20 @@ source venv/bin/activate
 
 ### Basic Usage
 ```bash
-python run.py --file <path_to_fit_file> [options]
+python cli.py --file <path_to_fit_file> [options]
 ```
 
 ## 🎯 Common Examples
 
 ### 1. **Basic Analysis**
 ```bash
-python run.py --file cache/Into_the_clouds.fit
+python cli.py --file cache/Into_the_clouds.fit
 ```
 *Uses default settings: FTP=250W, Max HR=195, Weight=70kg*
 
 ### 2. **Custom Athlete Settings**
 ```bash
-python run.py --file cache/Into_the_clouds.fit \
+python cli.py --file cache/Into_the_clouds.fit \
   --ftp 290 \
   --max-hr 195 \
   --weight 75 \
@@ -35,21 +35,21 @@ python run.py --file cache/Into_the_clouds.fit \
 
 ### 3. **Different Output Directory**
 ```bash
-python run.py --file cache/Engine_on_nobody_s_driving.fit \
+python cli.py --file cache/Engine_on_nobody_s_driving.fit \
   --output-dir my_analysis \
   --ftp 280
 ```
 
 ### 4. **Display Only (No Save)**
 ```bash
-python run.py --file cache/Into_the_clouds.fit \
+python cli.py --file cache/Into_the_clouds.fit \
   --no-save \
   --ftp 290
 ```
 
 ### 5. **Custom Analysis ID**
 ```bash
-python run.py --file cache/Into_the_clouds.fit \
+python cli.py --file cache/Into_the_clouds.fit \
   --analysis-id "my_custom_analysis" \
   --ftp 290
 ```
@@ -80,25 +80,25 @@ python run.py --file cache/Into_the_clouds.fit \
 ```bash
 # Process all FIT files in cache directory
 for file in cache/*.fit; do
-  python run.py --file "$file" --ftp 290 --name "Cyclist"
+  python cli.py --file "$file" --ftp 290 --name "Cyclist"
 done
 ```
 
 ### **Different Settings for Different Rides**
 ```bash
 # Easy ride with lower FTP
-python run.py --file cache/Into_the_clouds.fit --ftp 250
+python cli.py --file cache/Into_the_clouds.fit --ftp 250
 
 # Hard ride with higher FTP
-python run.py --file cache/Engine_on_nobody_s_driving.fit --ftp 290
+python cli.py --file cache/Engine_on_nobody_s_driving.fit --ftp 290
 ```
 
 ### **Testing Different Parameters**
 ```bash
 # Test with different FTP values
-python run.py --file cache/Into_the_clouds.fit --ftp 250 --output-dir test_ftp_250
-python run.py --file cache/Into_the_clouds.fit --ftp 290 --output-dir test_ftp_290
-python run.py --file cache/Into_the_clouds.fit --ftp 320 --output-dir test_ftp_320
+python cli.py --file cache/Into_the_clouds.fit --ftp 250 --output-dir test_ftp_250
+python cli.py --file cache/Into_the_clouds.fit --ftp 290 --output-dir test_ftp_290
+python cli.py --file cache/Into_the_clouds.fit --ftp 320 --output-dir test_ftp_320
 ```
 
 ## 📈 Output Files
@@ -161,7 +161,7 @@ source venv/bin/activate
 ```bash
 # Error: File 'activity.fit' not found
 # Solution: Check file path and use correct path
-python run.py --file cache/Into_the_clouds.fit
+python cli.py --file cache/Into_the_clouds.fit
 ```
 
 #### **3. Insufficient Data**
@@ -174,7 +174,7 @@ python run.py --file cache/Into_the_clouds.fit
 #### **4. Memory Issues**
 ```bash
 # For large files, use --no-save to reduce memory usage
-python run.py --file large_file.fit --no-save
+python cli.py --file large_file.fit --no-save
 ```
 
 ### **Debug Mode**
@@ -189,13 +189,13 @@ python -u run.py --file cache/Into_the_clouds.fit --ftp 290
 ### **1. Use Cached Files**
 ```bash
 # Use files already in cache directory
-python run.py --file cache/Into_the_clouds.fit
+python cli.py --file cache/Into_the_clouds.fit
 ```
 
 ### **2. Custom Output Directory**
 ```bash
 # Organize outputs by date or analysis type
-python run.py --file cache/Into_the_clouds.fit \
+python cli.py --file cache/Into_the_clouds.fit \
   --output-dir "analysis_$(date +%Y%m%d)" \
   --ftp 290
 ```
@@ -205,7 +205,7 @@ python run.py --file cache/Into_the_clouds.fit \
 # Process multiple files with same settings
 for file in cache/*.fit; do
   basename=$(basename "$file" .fit)
-  python run.py --file "$file" \
+  python cli.py --file "$file" \
     --output-dir "batch_analysis/$basename" \
     --ftp 290 \
     --name "Cyclist"
@@ -229,13 +229,13 @@ done
 ### **Workflow 1: Quick Analysis**
 ```bash
 # Fast analysis with defaults
-python run.py --file cache/Into_the_clouds.fit
+python cli.py --file cache/Into_the_clouds.fit
 ```
 
 ### **Workflow 2: Detailed Analysis**
 ```bash
 # Comprehensive analysis with custom settings
-python run.py --file cache/Into_the_clouds.fit \
+python cli.py --file cache/Into_the_clouds.fit \
   --ftp 290 \
   --max-hr 195 \
   --weight 75 \
@@ -247,7 +247,7 @@ python run.py --file cache/Into_the_clouds.fit \
 ```bash
 # Test different FTP values
 for ftp in 250 270 290 310; do
-  python run.py --file cache/Into_the_clouds.fit \
+  python cli.py --file cache/Into_the_clouds.fit \
     --ftp $ftp \
     --output-dir "ftp_test_$ftp"
 done
@@ -258,7 +258,7 @@ done
 # Process all files with same settings
 for file in cache/*.fit; do
   basename=$(basename "$file" .fit)
-  python run.py --file "$file" \
+  python cli.py --file "$file" \
     --ftp 290 \
     --name "Cyclist" \
     --output-dir "batch/$basename"

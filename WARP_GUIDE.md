@@ -26,12 +26,12 @@ pip list | grep -E "(pandas|streamlit|matplotlib)"
 
 ### **Start Dashboard**
 ```bash
-streamlit run enhanced_dashboard.py
+streamlit run dashboard.py
 ```
 
 ### **Run Command Line Analysis**
 ```bash
-python run.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
+python cli.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
 ```
 
 ### **Check Cache Status**
@@ -65,12 +65,12 @@ tasks:
     command: |
       cd /path/to/your/cycling_analysis
       source venv/bin/activate
-      streamlit run enhanced_dashboard.py
+      streamlit run dashboard.py
   - name: Run Analysis
     command: |
       cd /path/to/your/cycling_analysis
       source venv/bin/activate
-      python run.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
+      python cli.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
 ```
 
 ### **3. Custom Commands**
@@ -78,8 +78,8 @@ Add to your shell config (`~/.zshrc` or `~/.bashrc`):
 
 ```bash
 # Cycling Analysis Aliases
-alias cycling-dashboard="cd /path/to/your/cycling_analysis && source venv/bin/activate && streamlit run enhanced_dashboard.py"
-alias cycling-analyze="cd /path/to/your/cycling_analysis && source venv/bin/activate && python run.py"
+alias cycling-dashboard="cd /path/to/your/cycling_analysis && source venv/bin/activate && streamlit run dashboard.py"
+alias cycling-analyze="cd /path/to/your/cycling_analysis && source venv/bin/activate && python cli.py"
 alias cycling-cache="cd /path/to/your/cycling_analysis && source venv/bin/activate && python -c \"from data_manager import CyclingDataManager; dm = CyclingDataManager(); print(dm.get_cache_info())\""
 ```
 
@@ -88,10 +88,10 @@ alias cycling-cache="cd /path/to/your/cycling_analysis && source venv/bin/activa
 ### **1. Multi-Pane Workflow**
 ```bash
 # Pane 1: Dashboard
-streamlit run enhanced_dashboard.py
+streamlit run dashboard.py
 
 # Pane 2: Command line analysis
-python run.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
+python cli.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
 
 # Pane 3: Monitor cache
 watch -n 5 'python -c "from data_manager import CyclingDataManager; dm = CyclingDataManager(); print(dm.get_cache_info())"'
@@ -101,7 +101,7 @@ watch -n 5 'python -c "from data_manager import CyclingDataManager; dm = Cycling
 ```bash
 # Process all FIT files
 for file in cache/*.fit; do
-  python run.py --file "$file" --ftp 290 --name "Cyclist"
+  python cli.py --file "$file" --ftp 290 --name "Cyclist"
 done
 ```
 
@@ -146,7 +146,7 @@ watch -n 2 'ls -la cache/ && echo "---" && ls -la figures/ | head -10'
     "key": "cmd+shift+c",
     "command": "workbench.action.terminal.sendSequence",
     "args": {
-      "text": "source venv/bin/activate && streamlit run enhanced_dashboard.py\n"
+      "text": "source venv/bin/activate && streamlit run dashboard.py\n"
     }
   }
 ]
@@ -160,7 +160,7 @@ watch -n 2 'ls -la cache/ && echo "---" && ls -la figures/ | head -10'
 quick_analyze() {
   local file=$1
   local ftp=${2:-290}
-  python run.py --file "cache/$file" --ftp $ftp --name "Cyclist"
+  python cli.py --file "cache/$file" --ftp $ftp --name "Cyclist"
 }
 
 # Usage: quick_analyze Into_the_clouds.fit 290
@@ -211,14 +211,14 @@ chmod +x venv/bin/activate
 ```bash
 # Problem: Port 8501 already in use
 # Solution: Use different port
-streamlit run enhanced_dashboard.py --server.port 8502
+streamlit run dashboard.py --server.port 8502
 ```
 
 ### **4. Memory Issues**
 ```bash
 # Problem: Out of memory
 # Solution: Use --no-save flag
-python run.py --file cache/large_file.fit --no-save
+python cli.py --file cache/large_file.fit --no-save
 ```
 
 ## 🎯 Workflow Examples
@@ -227,8 +227,8 @@ python run.py --file cache/large_file.fit --no-save
 ```bash
 # Morning routine
 cycling_status
-python run.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
-streamlit run enhanced_dashboard.py
+python cli.py --file cache/Into_the_clouds.fit --ftp 290 --name "Cyclist"
+streamlit run dashboard.py
 ```
 
 ### **Workflow 2: Batch Processing**
@@ -236,7 +236,7 @@ streamlit run enhanced_dashboard.py
 # Process all files
 for file in cache/*.fit; do
   basename=$(basename "$file" .fit)
-  python run.py --file "$file" \
+  python cli.py --file "$file" \
     --ftp 290 \
     --name "Cyclist" \
     --output-dir "batch/$basename"
@@ -247,7 +247,7 @@ done
 ```bash
 # Test different FTP values
 for ftp in 250 270 290 310; do
-  python run.py --file cache/Into_the_clouds.fit \
+  python cli.py --file cache/Into_the_clouds.fit \
     --ftp $ftp \
     --output-dir "ftp_test_$ftp"
 done
@@ -304,7 +304,7 @@ python -c "from data_manager import CyclingDataManager; dm = CyclingDataManager(
 ### **3. Parallel Processing**
 ```bash
 # Process multiple files in parallel (if you have multiple cores)
-parallel python run.py --file {} --ftp 290 --name "Cyclist" ::: cache/*.fit
+parallel python cli.py --file {} --ftp 290 --name "Cyclist" ::: cache/*.fit
 ```
 
 ---

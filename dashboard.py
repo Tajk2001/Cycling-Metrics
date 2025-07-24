@@ -29,7 +29,7 @@ import pathlib
 
 # Local imports
 from data_manager import CyclingDataManager
-from enhanced_cycling_analysis import CyclingAnalyzer
+from analyzer import CyclingAnalyzer
 
 # Page configuration
 st.set_page_config(

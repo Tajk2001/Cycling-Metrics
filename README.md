@@ -36,9 +36,16 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. **Run the dashboard**
+4. **Run the application**
 ```bash
-streamlit run enhanced_dashboard.py
+# Launch web dashboard (recommended)
+python start.py
+
+# Or launch command line interface
+python start.py --cli
+
+# Or run directly
+streamlit run dashboard.py
 ```
 
 ## 🎯 Usage
@@ -52,14 +59,14 @@ streamlit run enhanced_dashboard.py
 ### Command Line
 ```bash
 # Basic analysis
-python run.py --file cache/activity.fit
+python cli.py --file cache/activity.fit
 
 # Custom settings
-python run.py --file cache/activity.fit --ftp 290 --name "Cyclist"
+python cli.py --file cache/activity.fit --ftp 290 --name "Cyclist"
 
 # Batch processing
 for file in cache/*.fit; do
-  python run.py --file "$file" --ftp 290 --name "Cyclist"
+  python cli.py --file "$file" --ftp 290 --name "Cyclist"
 done
 ```
 
@@ -96,12 +103,12 @@ done
 
 ```
 cycling_analysis/
-├── enhanced_dashboard.py      # Streamlit web interface
-├── enhanced_cycling_analysis.py  # Core analysis engine
-├── data_manager.py           # Data management and caching
-├── critical_power_analysis.py # CP/W' analysis
-├── run.py                    # Command-line interface
-├── requirements.txt          # Python dependencies
+├── dashboard.py             # Streamlit web interface
+├── analyzer.py              # Core analysis engine
+├── data_manager.py          # Data management and caching
+├── critical_power.py        # CP/W' analysis
+├── cli.py                   # Command-line interface
+├── requirements.txt         # Python dependencies
 ├── cache/                   # Uploaded FIT files
 ├── data/                    # Settings and history
 ├── figures/                 # Generated visualizations

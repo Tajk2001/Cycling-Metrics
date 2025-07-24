@@ -1,16 +1,35 @@
+#!/usr/bin/env python3
+"""
+Cycling Data Manager
+Comprehensive data management system for cycling analysis with error-proofing and clean storage.
+
+This module handles:
+- FIT file storage and retrieval
+- Analysis results management
+- Data caching and validation
+- Settings management
+- System status monitoring
+
+Author: Cycling Analysis Team
+Version: 1.0.0
+"""
+
+# Standard library imports
+import os
+import json
+import hashlib
+import shutil
+import tempfile
+import logging
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+
+# Third-party imports
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pathlib
-import tempfile
-import os
-import hashlib
-import shutil
-import json
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any
-import logging
-import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,14 +38,31 @@ logger = logging.getLogger(__name__)
 class CyclingDataManager:
     """
     Comprehensive data manager for cycling analysis with error-proofing and clean storage.
-    Handles FIT file storage, analysis results, caching, and data retrieval.
+    
+    This class handles FIT file storage, analysis results, caching, and data retrieval
+    with robust error handling and data validation.
+    
+    Attributes:
+        data_dir (Path): Directory for storing data files
+        cache_dir (Path): Directory for caching files
+        figures_dir (Path): Directory for storing generated figures
+        ride_history_path (Path): Path to ride history CSV file
+        analysis_history_path (Path): Path to analysis history CSV file
+        file_registry_path (Path): Path to file registry JSON file
+        settings_path (Path): Path to settings JSON file
     """
     
     def __init__(self, data_dir: str = "data", cache_dir: str = "cache"):
-        """Initialize the data manager with organized storage structure."""
-        self.data_dir = pathlib.Path(data_dir)
-        self.cache_dir = pathlib.Path(cache_dir)
-        self.figures_dir = pathlib.Path("figures")
+        """
+        Initialize the data manager with organized storage structure.
+        
+        Args:
+            data_dir: Directory for storing data files
+            cache_dir: Directory for caching files
+        """
+        self.data_dir = Path(data_dir)
+        self.cache_dir = Path(cache_dir)
+        self.figures_dir = Path("figures")
         
         # Create directory structure
         self._create_directories()
@@ -43,14 +79,14 @@ class CyclingDataManager:
         # Load existing data
         self._load_existing_data()
     
-    def _create_directories(self):
+    def _create_directories(self) -> None:
         """Create necessary directories if they don't exist."""
         directories = [self.data_dir, self.cache_dir, self.figures_dir]
         for directory in directories:
             directory.mkdir(exist_ok=True)
             logger.info(f"Ensured directory exists: {directory}")
     
-    def _init_session_state(self):
+    def _init_session_state(self) -> None:
         """Initialize Streamlit session state with default values."""
         if 'data_manager_initialized' not in st.session_state:
             st.session_state.data_manager_initialized = True
@@ -60,7 +96,7 @@ class CyclingDataManager:
             st.session_state.error_messages = []
             st.session_state.success_messages = []
     
-    def _load_existing_data(self):
+    def _load_existing_data(self) -> None:
         """Load existing data files and validate them."""
         try:
             # Load ride history
@@ -92,13 +128,13 @@ class CyclingDataManager:
             logger.error(f"Error loading existing data: {e}")
             self._create_backup_and_reset()
     
-    def _create_backup_and_reset(self):
+    def _create_backup_and_reset(self) -> None:
         """Create backup of corrupted files and reset them."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_dir = self.data_dir / f"backup_{timestamp}"
         backup_dir.mkdir(exist_ok=True)
         
-        # Backup corrupted files
+        # Backup existing files
         for file_path in [self.ride_history_path, self.analysis_history_path, self.file_registry_path]:
             if file_path.exists():
                 try:
@@ -107,36 +143,38 @@ class CyclingDataManager:
                 except Exception as e:
                     logger.error(f"Failed to backup {file_path}: {e}")
         
-        # Reset to empty data structures
+        # Reset data structures
         self.ride_history = pd.DataFrame()
         self.analysis_history = pd.DataFrame()
         self.file_registry = {}
         
-        st.warning(f"⚠️ Data files were corrupted and have been reset. Backup created in {backup_dir}")
+        logger.info("Reset data structures after corruption")
     
-    def save_data(self):
-        """Save all data with error handling."""
+    def save_data(self) -> bool:
+        """
+        Save all data to disk with error handling.
+        
+        Returns:
+            bool: True if save successful, False otherwise
+        """
         try:
             # Save ride history
             if not self.ride_history.empty:
                 self.ride_history.to_csv(self.ride_history_path, index=False)
-                logger.info("Saved ride history")
             
             # Save analysis history
             if not self.analysis_history.empty:
                 self.analysis_history.to_csv(self.analysis_history_path, index=False)
-                logger.info("Saved analysis history")
             
             # Save file registry
             with open(self.file_registry_path, 'w') as f:
                 json.dump(self.file_registry, f, indent=2)
-            logger.info("Saved file registry")
             
+            logger.info("Data saved successfully")
             return True
             
         except Exception as e:
             logger.error(f"Error saving data: {e}")
-            st.error(f"❌ Failed to save data: {e}")
             return False
     
     def upload_fit_file(self, uploaded_file) -> Tuple[bool, str, Optional[str]]:
@@ -208,7 +246,7 @@ class CyclingDataManager:
         
         return ride_id
     
-    def _calculate_file_hash(self, file_path: pathlib.Path) -> str:
+    def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA-256 hash of file for integrity checking."""
         hash_sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
@@ -234,7 +272,7 @@ class CyclingDataManager:
         # Check file registry
         if ride_id in self.file_registry:
             file_path = self.file_registry[ride_id]['file_path']
-            if pathlib.Path(file_path).exists():
+            if Path(file_path).exists():
                 return file_path
         
         # Check if file exists in cache directory
@@ -307,6 +345,29 @@ class CyclingDataManager:
                 pd.DataFrame([history_entry])
             ], ignore_index=True)
             
+            # Update ride history with metrics
+            ride_history_entry = {
+                'ride_id': ride_id,
+                'analysis_date': datetime.now().strftime('%Y%m%d_%H%M%S'),
+                'ftp': ftp,
+                'lthr': lthr
+            }
+            
+            # Add all metrics from results to ride history
+            for key, value in results.items():
+                if key != 'status':  # Skip status field
+                    ride_history_entry[key] = value
+            
+            # Remove existing entry if it exists
+            if not self.ride_history.empty and ride_id in self.ride_history['ride_id'].values:
+                self.ride_history = self.ride_history[self.ride_history['ride_id'] != ride_id]
+            
+            # Add new entry to ride history
+            self.ride_history = pd.concat([
+                self.ride_history,
+                pd.DataFrame([ride_history_entry])
+            ], ignore_index=True)
+            
             # Save data
             self.save_data()
             
@@ -333,7 +394,7 @@ class CyclingDataManager:
                 return False, "File not in registry"
             
             # Calculate current hash
-            current_hash = self._calculate_file_hash(pathlib.Path(file_path))
+            current_hash = self._calculate_file_hash(Path(file_path))
             stored_hash = self.file_registry[ride_id]['file_hash']
             
             if current_hash != stored_hash:
@@ -388,7 +449,7 @@ class CyclingDataManager:
     def export_data(self, export_path: str) -> bool:
         """Export all data to a backup location."""
         try:
-            export_dir = pathlib.Path(export_path)
+            export_dir = Path(export_path)
             export_dir.mkdir(parents=True, exist_ok=True)
             
             # Copy all data files
@@ -416,7 +477,7 @@ class CyclingDataManager:
     def import_data(self, import_path: str) -> bool:
         """Import data from a backup location."""
         try:
-            import_dir = pathlib.Path(import_path)
+            import_dir = Path(import_path)
             
             # Import data files
             for file_name in ["ride_history.csv", "analysis_history.csv", "file_registry.json"]:
@@ -456,9 +517,9 @@ class CyclingDataManager:
             # 1. Remove FIT file from cache
             fit_file_path = self.get_fit_file_path(ride_id)
             logger.info(f"FIT file path for {ride_id}: {fit_file_path}")
-            if fit_file_path and pathlib.Path(fit_file_path).exists():
+            if fit_file_path and Path(fit_file_path).exists():
                 try:
-                    pathlib.Path(fit_file_path).unlink()
+                    Path(fit_file_path).unlink()
                     deleted_items.append("FIT file")
                     logger.info(f"Deleted FIT file: {fit_file_path}")
                 except Exception as e:
@@ -634,4 +695,183 @@ class CyclingDataManager:
         except Exception as e:
             error_msg = f"❌ Error clearing all rides: {str(e)}"
             logger.error(error_msg)
-            return False, error_msg 
+            return False, error_msg
+    
+    def clear_cache(self, cache_type: str = "all") -> Tuple[bool, str]:
+        """
+        Clear different types of cache with selective options.
+        
+        Args:
+            cache_type: Type of cache to clear ("fit_files", "session", "analysis", "all")
+            
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        try:
+            deleted_items = []
+            
+            if cache_type in ["fit_files", "all"]:
+                # Clear FIT files from cache directory
+                fit_files_cleared = 0
+                for fit_file in self.cache_dir.glob("*.fit"):
+                    try:
+                        fit_file.unlink()
+                        fit_files_cleared += 1
+                        logger.info(f"Deleted cached FIT file: {fit_file.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete {fit_file}: {e}")
+                
+                if fit_files_cleared > 0:
+                    deleted_items.append(f"{fit_files_cleared} FIT files")
+                
+                # Clear file registry entries for deleted files
+                registry_cleared = 0
+                for ride_id in list(self.file_registry.keys()):
+                    file_path = self.file_registry[ride_id]['file_path']
+                    if not Path(file_path).exists():
+                        del self.file_registry[ride_id]
+                        registry_cleared += 1
+                
+                if registry_cleared > 0:
+                    deleted_items.append(f"{registry_cleared} registry entries")
+            
+            if cache_type in ["session", "all"]:
+                # Clear session state cache
+                session_count = len(st.session_state.uploaded_files)
+                st.session_state.uploaded_files.clear()
+                if session_count > 0:
+                    deleted_items.append(f"{session_count} session entries")
+                logger.info(f"Cleared session cache ({session_count} entries)")
+            
+            if cache_type in ["analysis", "all"]:
+                # Clear analysis cache
+                analysis_count = len(st.session_state.analysis_cache)
+                st.session_state.analysis_cache.clear()
+                if analysis_count > 0:
+                    deleted_items.append(f"{analysis_count} analysis cache entries")
+                logger.info(f"Cleared analysis cache ({analysis_count} entries)")
+            
+            # Save updated data
+            self.save_data()
+            
+            if deleted_items:
+                message = f"Cache cleared successfully: {', '.join(deleted_items)}"
+                logger.info(message)
+                return True, message
+            else:
+                return True, "No cache items found to clear"
+                
+        except Exception as e:
+            error_msg = f"Error clearing cache: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def get_cache_info(self) -> Dict[str, Any]:
+        """
+        Get detailed information about cache usage.
+        
+        Returns:
+            Dict[str, Any]: Cache information including sizes and counts
+        """
+        try:
+            cache_info = {
+                'fit_files_count': 0,
+                'fit_files_size': 0,
+                'session_entries': len(st.session_state.uploaded_files),
+                'analysis_cache_entries': len(st.session_state.analysis_cache),
+                'registry_entries': len(self.file_registry)
+            }
+            
+            # Calculate FIT file cache info
+            for fit_file in self.cache_dir.glob("*.fit"):
+                cache_info['fit_files_count'] += 1
+                cache_info['fit_files_size'] += fit_file.stat().st_size
+            
+            # Convert bytes to MB for readability
+            cache_info['fit_files_size_mb'] = cache_info['fit_files_size'] / (1024 * 1024)
+            
+            return cache_info
+            
+        except Exception as e:
+            logger.error(f"Error getting cache info: {e}")
+            return {}
+    
+    def load_settings(self) -> Dict[str, Any]:
+        """
+        Load user settings from JSON file.
+        
+        Returns:
+            Dict[str, Any]: Dictionary containing user settings
+        """
+        default_settings = {
+            'ftp': 250,
+            'lthr': 160,
+            'max_hr': 195,
+            'rest_hr': 51,
+            'weight_kg': 70,
+            'height_cm': 175,
+            'athlete_name': 'Cyclist'
+        }
+        
+        try:
+            if self.settings_path.exists():
+                with open(self.settings_path, 'r') as f:
+                    saved_settings = json.load(f)
+                    # Merge with defaults to ensure all keys exist
+                    settings = {**default_settings, **saved_settings}
+                    logger.info(f"Loaded settings from {self.settings_path}")
+                    return settings
+            else:
+                logger.info("No settings file found, using defaults")
+                return default_settings
+        except Exception as e:
+            logger.error(f"Error loading settings: {e}")
+            return default_settings
+    
+    def save_settings(self, settings: Dict[str, Any]) -> bool:
+        """
+        Save user settings to JSON file.
+        
+        Args:
+            settings: Dictionary containing user settings
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            with open(self.settings_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            logger.info(f"Settings saved to {self.settings_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving settings: {e}")
+            return False
+    
+    def get_setting(self, key: str, default: Any = None) -> Any:
+        """
+        Get a specific setting value.
+        
+        Args:
+            key: Setting key to retrieve
+            default: Default value if key doesn't exist
+            
+        Returns:
+            Any: Setting value or default
+        """
+        settings = self.load_settings()
+        return settings.get(key, default)
+    
+    def set_setting(self, key: str, value: Any) -> bool:
+        """
+        Set a specific setting value.
+        
+        Args:
+            key: Setting key to set
+            value: Value to set
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        settings = self.load_settings()
+        settings[key] = value
+        return self.save_settings(settings)

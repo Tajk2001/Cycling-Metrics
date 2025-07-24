@@ -1,10 +1,9 @@
 {
-  "migration_date": "2025-07-22T18:43:25.561666",
-  "version": "2.0.0",
-  "data_structure": "organized",
-  "directories": {
-    "data": "data",
-    "cache": "cache",
-    "figures": "figures"
-  }
+  "athlete_name": "Cyclist",
+  "weight_kg": 70,
+  "height_cm": 175,
+  "max_hr": 195,
+  "rest_hr": 51,
+  "ftp": 250,
+  "lthr": 160
 }

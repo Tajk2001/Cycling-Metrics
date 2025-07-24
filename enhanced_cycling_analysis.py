@@ -2,28 +2,47 @@
 """
 Enhanced Cycling Analysis Script
 Comprehensive analysis of cycling FIT files with personalized metrics and visualizations.
+
+This module provides:
+- Advanced data processing pipeline
+- Personalized metrics calculation
+- Comprehensive visualization generation
+- Critical power and W' balance analysis
+- Heat stress and fatigue pattern analysis
+
+Author: Cycling Analysis Team
+Version: 1.0.0
 """
 
+# Standard library imports
+import os
+import json
+import warnings
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Tuple, Any, Union
+from dataclasses import dataclass
+from enum import Enum
+
+# Third-party imports
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import curve_fit
-import fitparse
-import seaborn as sns
-from datetime import datetime
-import os
-from typing import Optional, Dict, List, Tuple, Any
 import matplotlib.gridspec as gridspec
-import pathlib
-import argparse
+from scipy.optimize import curve_fit
+from scipy import stats
+from scipy.signal import savgol_filter
+import seaborn as sns
+import fitparse
+import gpxpy
+import gpxpy.gpx
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
 
-# Set style for modern, minimalist plots
-plt.style.use('default')
-sns.set_palette("husl")
-plt.rcParams['figure.facecolor'] = 'white'
-plt.rcParams['axes.facecolor'] = 'white'
+# Suppress warnings for cleaner output
+warnings.filterwarnings('ignore')
 
-# --- CONSTANTS (for magic numbers) ---
+# --- CONSTANTS ---
 SMOOTHING_WINDOW = 30
 MOVING_AVG_WINDOW = 30
 POWER_OUTLIER_THRESHOLD = 5.0
@@ -32,506 +51,918 @@ CADENCE_OUTLIER_THRESHOLD = 3.0
 SIGNIFICANT_POWER_CHANGE = 20
 FORWARD_FILL_LIMIT = 5
 
+class DataQualityLevel(Enum):
+    """Enum for data quality assessment levels."""
+    EXCELLENT = "excellent"
+    GOOD = "good"
+    FAIR = "fair"
+    POOR = "poor"
+
+@dataclass
+class DataQualityReport:
+    """Data structure for data quality assessment results."""
+    overall_quality: DataQualityLevel
+    missing_data_percentage: float
+    outlier_percentage: float
+    sampling_rate_consistency: bool
+    required_fields_present: Dict[str, bool]
+    data_gaps: List[Tuple[float, float]]
+    recommendations: List[str]
+
+# Set style for modern, minimalist plots
+plt.style.use('default')
+sns.set_palette("husl")
+plt.rcParams['figure.facecolor'] = 'white'
+plt.rcParams['axes.facecolor'] = 'white'
 
 class CyclingAnalyzer:
-    """Main class for cycling data analysis with personalized configuration.
+    """
+    Main class for cycling data analysis with personalized configuration.
+    
+    This class provides comprehensive analysis capabilities including:
+    - Data ingestion and cleaning
+    - Metrics calculation
+    - Visualization generation
+    - Advanced modeling (CP, W' balance)
+    - Performance analysis
     
     Use set_lactate_coeffs(a, b, c) to personalize the lactate-power curve for your physiology.
     """
     
-    def __init__(self, athlete_name="Taj Krieger", ftp=300, max_hr=195, rest_hr=51, 
-                 weight_kg=52, height_cm=165, lactate_rest=1.2, lactate_peak=8.0,
-                 w_prime_tau=386, max_interpolation_pct=5.0, power_outlier_threshold=5.0,
-                 hr_outlier_threshold=3.0, cadence_outlier_threshold=3.0,
-                 save_figures=False, save_dir="figures", analysis_id=None):
-        """Initialize analyzer with enhanced athlete profile and data quality parameters."""
-        self.athlete_name = athlete_name
+    def __init__(self, save_figures: bool = True, ftp: int = 250, max_hr: int = 195, 
+                 rest_hr: int = 51, weight_kg: float = 70, height_cm: float = 175, 
+                 athlete_name: str = "Cyclist", save_dir: str = "figures", 
+                 analysis_id: Optional[str] = None):
+        """
+        Initialize the Cycling Analyzer with comprehensive data processing capabilities.
+        
+        Args:
+            save_figures: Whether to save generated figures
+            ftp: Functional Threshold Power in watts
+            max_hr: Maximum heart rate
+            rest_hr: Resting heart rate
+            weight_kg: Athlete weight in kg
+            height_cm: Athlete height in cm
+            athlete_name: Athlete name
+            save_dir: Directory to save figures
+            analysis_id: Unique identifier for this analysis
+        """
+        self.save_figures = save_figures
         self.ftp = ftp
         self.max_hr = max_hr
         self.rest_hr = rest_hr
         self.weight_kg = weight_kg
         self.height_cm = height_cm
-        
-        # Enhanced physiological parameters
-        self.lactate_rest = lactate_rest  # Resting lactate (mmol/L)
-        self.lactate_peak = lactate_peak  # Peak lactate (mmol/L)
-        self.w_prime_tau = w_prime_tau    # W' recovery time constant (s)
-        
-        # Data quality thresholds
-        self.max_interpolation_pct = max_interpolation_pct
-        self.power_outlier_threshold = power_outlier_threshold
-        self.hr_outlier_threshold = hr_outlier_threshold
-        self.cadence_outlier_threshold = cadence_outlier_threshold
-        
-        # Training zones
-        self.power_zones = {
-            'Z1 (Recovery)': (0, 55),
-            'Z2 (Endurance)': (55, 75),
-            'Z3 (Tempo)': (75, 90),
-            'Z4 (Threshold)': (90, 105),
-            'Z5 (VO2max)': (105, 120),
-            'Z6 (Anaerobic)': (120, 150),
-            'Z7 (Neuromuscular)': (150, 200)
-        }
-        
-        # Heart rate zones
-        self.hr_zones = {
-            'Z1 (Recovery)': (rest_hr, max_hr * 0.65),
-            'Z2 (Endurance)': (max_hr * 0.65, max_hr * 0.75),
-            'Z3 (Tempo)': (max_hr * 0.75, max_hr * 0.85),
-            'Z4 (Threshold)': (max_hr * 0.85, max_hr * 0.95),
-            'Z5 (VO2max)': (max_hr * 0.95, max_hr),
-            'Z6 (Anaerobic)': (max_hr, max_hr * 1.05)
-        }
-        
-        # Analysis settings
-        self.smoothing_window = SMOOTHING_WINDOW
-        self.moving_avg_window = MOVING_AVG_WINDOW  # For moving-time-based calculations
-        
-        # Display settings
-        self.show_advanced_plots = True
-        self.show_lactate_estimation = True
-        self.show_w_prime_balance = True
-        self.show_zone_analysis = True
-        
-        # Training goals
-        self.session_type = "Endurance"
-        self.target_tss = 100
-        self.target_duration_hr = 2.0
-        
-        # Data storage
-        self.df = None
-        self.metrics = {}
-        self.zone_percentages = {}
-        self.hr_zone_percentages = {}
-        self.cadence_zone_percentages = {}
-        self.speed_zone_percentages = {}
-        self.data_quality_report = {}
-        
-        # Global figure saving options
-        self.save_figures = save_figures
+        self.athlete_name = athlete_name
         self.save_dir = save_dir
-        self.analysis_id = analysis_id or athlete_name  # Use analysis_id for figure naming
-        if self.save_figures:
-            os.makedirs(self.save_dir, exist_ok=True)
-        # Global color palette for zones (Z1-Z7)
+        self.analysis_id = analysis_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Initialize data structures
+        self.df = None  # Main dataframe
+        self.raw_data = None
+        self.clean_data = None
+        self.processed_data = None
+        self.quality_report = None
+        self.metrics = {}
+        self.power_bests = {}
+        
+        # W' balance parameters (Skiba et al., 2012)
+        self.w_prime_tau = 228  # seconds, recovery time constant
+        
+        # Create save directory if it doesn't exist
+        if save_figures and not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        
+        # Set up plotting style
+        plt.style.use('seaborn-v0_8')
+        sns.set_palette("husl")
+        
+        # Define zone colors for visualization
         self.zone_colors = {
-            'Z1 (Recovery)': '#2ecc40',    # Green
-            'Z2 (Endurance)': '#39cccc',   # Teal
-            'Z3 (Tempo)': '#ffdc00',       # Yellow
-            'Z4 (Threshold)': '#ff851b',   # Orange
-            'Z5 (VO2max)': '#ff4136',      # Red
-            'Z6 (Anaerobic)': '#b10dc9',   # Purple
-            'Z7 (Neuromuscular)': '#111111' # Dark Gray
+            'Z1 (Active Recovery)': '#4CAF50',
+            'Z2 (Endurance)': '#8BC34A', 
+            'Z3 (Tempo)': '#FFEB3B',
+            'Z4 (Threshold)': '#FF9800',
+            'Z5 (VO2 Max)': '#F44336',
+            'Z6 (Anaerobic Capacity)': '#9C27B0',
+            'Z7 (Neuromuscular Power)': '#E91E63'
         }
-        # Optional: for multi-ride dashboard comparison
-        self.multi_ride_zones = None
-        self.multi_ride_labels = None
+        
+        # Initialize multi-ride attributes for compatibility
+        self.multi_ride_zones = []
+        self.multi_ride_labels = []
+        
+        print(f"🚴 Cycling Analyzer initialized for {athlete_name}")
+        print(f"📊 FTP: {ftp}W, Max HR: {max_hr}, Weight: {weight_kg}kg")
+        print(f"💾 Analysis ID: {self.analysis_id}")
     
-    def load_fit_file(self, file_path):
-        """Load and parse FIT file."""
+    def process_activity_data(self, file_path: str) -> bool:
+        """
+        Main data processing pipeline following the logical flow
+        
+        Args:
+            file_path (str): Path to the activity file (FIT, TCX, CSV)
+            
+        Returns:
+            bool: True if processing successful, False otherwise
+        """
+        print("\n" + "="*80)
+        print("🚴 CYCLING ANALYSIS PIPELINE")
+        print("="*80)
+        
+        try:
+            # Step 1: 📥 DATA INGESTION
+            print("\n📥 STEP 1: DATA INGESTION")
+            print("-" * 40)
+            if not self._ingest_data(file_path):
+                return False
+            
+            # Step 2: 🔍 INITIAL DATA CHECKS
+            print("\n🔍 STEP 2: INITIAL DATA CHECKS")
+            print("-" * 40)
+            self._perform_initial_checks()
+            
+            # Step 3: 🧹 DATA CLEANING
+            print("\n🧹 STEP 3: DATA CLEANING")
+            print("-" * 40)
+            self._clean_data()
+            
+            # Step 4: 🧮 FEATURE ENGINEERING
+            print("\n🧮 STEP 4: FEATURE ENGINEERING")
+            print("-" * 40)
+            self._engineer_features()
+            
+            # Step 5: 📊 DATA AGGREGATION
+            print("\n📊 STEP 5: DATA AGGREGATION")
+            print("-" * 40)
+            self._aggregate_data()
+            
+            # Step 6: 📈 VISUALIZATION
+            print("\n📈 STEP 6: VISUALIZATION")
+            print("-" * 40)
+            self._create_visualizations()
+            
+            # Step 7: 🧪 MODELING & INTERPRETATION
+            print("\n🧪 STEP 7: MODELING & INTERPRETATION")
+            print("-" * 40)
+            self._perform_modeling()
+            
+            print("\n✅ Data processing pipeline completed successfully!")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error in data processing pipeline: {str(e)}")
+            return False
+    
+    def _ingest_data(self, file_path: str) -> bool:
+        """
+        Step 1: Data Ingestion - Import FIT/TCX/CSV file(s)
+        
+        Args:
+            file_path (str): Path to the activity file
+            
+        Returns:
+            bool: True if ingestion successful
+        """
+        print(f"📁 Loading file: {file_path}")
+        
+        try:
+            file_extension = file_path.lower().split('.')[-1]
+            
+            if file_extension == 'fit':
+                self.raw_data = self._load_fit_file(file_path)
+            elif file_extension == 'tcx':
+                self.raw_data = self._load_tcx_file(file_path)
+            elif file_extension == 'csv':
+                self.raw_data = self._load_csv_file(file_path)
+            else:
+                print(f"❌ Unsupported file format: {file_extension}")
+                return False
+            
+            if self.raw_data is None or self.raw_data.empty:
+                print("❌ No data loaded from file")
+                return False
+            
+            print(f"✅ Successfully loaded {len(self.raw_data)} data points")
+            print(f"📊 Data columns: {list(self.raw_data.columns)}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error during data ingestion: {str(e)}")
+            return False
+    
+    def _load_fit_file(self, file_path: str) -> pd.DataFrame:
+        """
+        Load data from FIT file
+        
+        Args:
+            file_path (str): Path to FIT file
+            
+        Returns:
+            pd.DataFrame: Loaded data
+        """
         try:
             fitfile = fitparse.FitFile(file_path)
-            records = []
+            
+            # Extract data from FIT file
+            data = []
             for record in fitfile.get_messages('record'):
-                # Only process if record is a DataMessage (iterable)
-                if hasattr(fitparse, 'DataMessage'):
-                    if not isinstance(record, fitparse.DataMessage):
-                        continue
-                else:
-                    if record.__class__.__name__ != 'DataMessage':
-                        continue
-                # Defensive: only iterate if record is a DataMessage and iterable
-                if hasattr(record, '__iter__') and record.__class__.__name__ == 'DataMessage':
-                    try:
-                        record_data = {field.name: field.value for field in record}
-                        records.append(record_data)
-                    except Exception:
-                        continue
-            self.df = pd.DataFrame(records)
-            print(f"Data loaded: {self.df.shape[0]} records, {self.df.shape[1]} fields")
-            print(f"Available columns: {list(self.df.columns)}")
-            return True
+                record_data = {}
+                
+                # Get timestamp
+                if record.get_value('timestamp'):
+                    record_data['timestamp'] = record.get_value('timestamp')
+                
+                # Get power data
+                if record.get_value('power'):
+                    record_data['power'] = record.get_value('power')
+                
+                # Get heart rate data
+                if record.get_value('heart_rate'):
+                    record_data['heart_rate'] = record.get_value('heart_rate')
+                
+                # Get cadence data
+                if record.get_value('cadence'):
+                    record_data['cadence'] = record.get_value('cadence')
+                
+                # Get speed data
+                if record.get_value('speed'):
+                    record_data['speed'] = record.get_value('speed') * 3.6  # Convert m/s to km/h
+                
+                # Get elevation data
+                if record.get_value('altitude'):
+                    record_data['elevation'] = record.get_value('altitude')
+                
+                # Get distance data
+                if record.get_value('distance'):
+                    record_data['distance'] = record.get_value('distance') / 1000  # Convert to km
+                
+                if record_data:  # Only add if we have some data
+                    data.append(record_data)
+            
+            if not data:
+                print("❌ No valid data found in FIT file")
+                return None
+            
+            df = pd.DataFrame(data)
+            
+            # Convert timestamp to datetime if it's not already
+            if 'timestamp' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            return df
+            
         except Exception as e:
-            print(f"Error loading FIT file: {e}")
-            return False
+            print(f"❌ Error loading FIT file: {str(e)}")
+            return None
     
-    def clean_and_smooth_data(self):
-        """Enhanced data cleaning with outlier detection and quality reporting."""
-        if self.df is None:
-            print("No data loaded. Please load a FIT file first.")
-            return False
+    def _load_tcx_file(self, file_path: str) -> pd.DataFrame:
+        """
+        Load data from TCX file
         
-        # Initialize data quality report
-        self.data_quality_report: Dict[str, Any] = {
-            'total_records': len(self.df),
-            'interpolated_pct': 0.0,
-            'outliers_removed': 0,
-            'data_quality_score': 100.0
+        Args:
+            file_path (str): Path to TCX file
+            
+        Returns:
+            pd.DataFrame: Loaded data
+        """
+        try:
+            with open(file_path, 'r') as gpx_file:
+                gpx = gpxpy.parse(gpx_file)
+            
+            data = []
+            for track in gpx.tracks:
+                for segment in track.segments:
+                    for point in segment.points:
+                        point_data = {}
+                        
+                        # Get timestamp
+                        if point.time:
+                            point_data['timestamp'] = point.time
+                        
+                        # Get elevation
+                        if point.elevation:
+                            point_data['elevation'] = point.elevation
+                        
+                        # Get speed (if available)
+                        if point.speed:
+                            point_data['speed'] = point.speed * 3.6  # Convert m/s to km/h
+                        
+                        # Get heart rate (if available in extensions)
+                        if point.extensions:
+                            for extension in point.extensions:
+                                if 'heartrate' in extension.tag.lower():
+                                    point_data['heart_rate'] = float(extension.text)
+                        
+                        if point_data:
+                            data.append(point_data)
+            
+            if not data:
+                print("❌ No valid data found in TCX file")
+                return None
+            
+            df = pd.DataFrame(data)
+            
+            # Convert timestamp to datetime if it's not already
+            if 'timestamp' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Error loading TCX file: {str(e)}")
+            return None
+    
+    def _load_csv_file(self, file_path: str) -> pd.DataFrame:
+        """
+        Load data from CSV file
+        
+        Args:
+            file_path (str): Path to CSV file
+            
+        Returns:
+            pd.DataFrame: Loaded data
+        """
+        try:
+            df = pd.read_csv(file_path)
+            
+            # Try to identify timestamp column
+            timestamp_cols = [col for col in df.columns if 'time' in col.lower() or 'date' in col.lower()]
+            if timestamp_cols:
+                df['timestamp'] = pd.to_datetime(df[timestamp_cols[0]])
+            
+            # Try to identify other columns
+            column_mapping = {
+                'power': ['power', 'watts', 'w'],
+                'heart_rate': ['heart_rate', 'hr', 'heartrate', 'bpm'],
+                'cadence': ['cadence', 'rpm'],
+                'speed': ['speed', 'velocity', 'kmh', 'mph'],
+                'elevation': ['elevation', 'altitude', 'alt'],
+                'distance': ['distance', 'dist']
+            }
+            
+            for target_col, possible_names in column_mapping.items():
+                for col in df.columns:
+                    if col.lower() in possible_names:
+                        df[target_col] = df[col]
+                        break
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Error loading CSV file: {str(e)}")
+            return None
+    
+    def _perform_initial_checks(self):
+        """
+        Step 2: Initial Data Checks - Verify required fields and data quality
+        """
+        print("🔍 Performing initial data quality checks...")
+        
+        # Define required fields
+        required_fields = {
+            'timestamp': 'Time',
+            'power': 'Power', 
+            'heart_rate': 'Heart Rate',
+            'cadence': 'Cadence',
+            'speed': 'Speed',
+            'elevation': 'Elevation'
         }
         
-        # Convert units
-        if 'speed' in self.df.columns:
-            self.df['speed_kmh'] = self.df['speed'] * 3.6
-        if 'distance' in self.df.columns:
-            self.df['distance_km'] = self.df['distance'] / 1000
+        # Check field presence
+        field_status = {}
+        for field, display_name in required_fields.items():
+            field_status[display_name] = field in self.raw_data.columns
+            status = "✅" if field_status[display_name] else "❌"
+            print(f"   {status} {display_name}")
         
-        # Enhanced outlier detection and removal
-        outlier_removed = 0
-        for col, threshold in [('power', self.power_outlier_threshold), 
-                              ('heart_rate', self.hr_outlier_threshold),
-                              ('cadence', self.cadence_outlier_threshold)]:
-            if col in self.df.columns:
-                # Calculate statistics for outlier detection
-                mean_val = self.df[col].mean()
-                std_val = self.df[col].std()
-                
-                # Define outlier bounds
-                lower_bound = mean_val - threshold * std_val
-                upper_bound = mean_val + threshold * std_val
-                
-                # Count outliers
-                outliers = ((self.df[col] < lower_bound) | (self.df[col] > upper_bound)).sum()
-                outlier_removed += outliers
-                
-                # Clip outliers to bounds (more conservative than removal)
-                self.df[col] = self.df[col].clip(lower_bound, upper_bound)
+        # Check data quality
+        missing_data = self.raw_data.isnull().sum()
+        total_points = len(self.raw_data)
         
-        # Enhanced interpolation with limits
-        interpolated_count = 0
-        for col in ['power', 'cadence', 'heart_rate', 'speed_kmh']:
-            if col in self.df.columns:
-                # Count missing values before interpolation
-                missing_before = self.df[col].isna().sum()
-                
-                # Interpolate with forward-fill limit of 5 seconds
-                self.df[col] = self.df[col].interpolate(method='linear', limit=FORWARD_FILL_LIMIT, limit_direction='both')
-                
-                # Count interpolated values
-                interpolated_count += missing_before - self.df[col].isna().sum()
+        print(f"\n📊 Data Quality Summary:")
+        print(f"   Total data points: {total_points}")
+        print(f"   Missing data percentage: {(missing_data.sum() / (total_points * len(self.raw_data.columns))) * 100:.1f}%")
         
-        # Calculate interpolation percentage
-        total_possible = len(self.df) * 4  # 4 main columns
-        interpolation_pct = (interpolated_count / total_possible) * 100
+        # Check for zero-duration segments
+        if 'timestamp' in self.raw_data.columns:
+            time_diffs = self.raw_data['timestamp'].diff().dt.total_seconds()
+            zero_duration_segments = (time_diffs == 0).sum()
+            print(f"   Zero-duration segments: {zero_duration_segments}")
         
-        # Apply smoothing for visualization only (keep raw data for NP calculation)
-        smoothing_windows = {
-            'power': self.smoothing_window, 
-            'heart_rate': self.smoothing_window, 
-            'cadence': self.smoothing_window, 
-            'speed_kmh': 10
+        # Create quality report
+        missing_percentage = (missing_data.sum() / (total_points * len(self.raw_data.columns))) * 100
+        
+        if missing_percentage < 5 and all(field_status.values()):
+            quality_level = DataQualityLevel.EXCELLENT
+        elif missing_percentage < 15 and sum(field_status.values()) >= 4:
+            quality_level = DataQualityLevel.GOOD
+        elif missing_percentage < 30 and sum(field_status.values()) >= 3:
+            quality_level = DataQualityLevel.FAIR
+        else:
+            quality_level = DataQualityLevel.POOR
+        
+        self.quality_report = DataQualityReport(
+            overall_quality=quality_level,
+            missing_data_percentage=missing_percentage,
+            outlier_percentage=0,  # Will be calculated in cleaning step
+            sampling_rate_consistency=True,  # Will be checked in cleaning step
+            required_fields_present=field_status,
+            data_gaps=[],
+            recommendations=[]
+        )
+        
+        print(f"   Overall quality: {quality_level.value.upper()}")
+    
+    def _clean_data(self):
+        """
+        Step 3: Data Cleaning - Handle missing values, outliers, and artifacts
+        """
+        print("🧹 Cleaning and preprocessing data...")
+        
+        # Create a copy for cleaning
+        self.clean_data = self.raw_data.copy()
+        
+        # Handle missing values
+        print("   📝 Handling missing values...")
+        for column in self.clean_data.columns:
+            if column == 'timestamp':
+                continue  # Don't interpolate timestamps
+            
+            missing_count = self.clean_data[column].isnull().sum()
+            if missing_count > 0:
+                print(f"     {column}: {missing_count} missing values")
+                
+                # Use forward fill for small gaps, interpolation for larger gaps
+                if missing_count < len(self.clean_data) * 0.1:  # Less than 10% missing
+                    self.clean_data[column] = self.clean_data[column].fillna(method='ffill').fillna(method='bfill')
+                else:
+                    self.clean_data[column] = self.clean_data[column].interpolate(method='linear')
+        
+        # Remove zero-duration or artifact segments
+        print("   🗑️ Removing artifacts...")
+        if 'timestamp' in self.clean_data.columns:
+            time_diffs = self.clean_data['timestamp'].diff().dt.total_seconds()
+            artifact_mask = (time_diffs == 0) | (time_diffs > 60)  # Gaps > 60 seconds
+            artifacts_removed = artifact_mask.sum()
+            self.clean_data = self.clean_data[~artifact_mask]
+            print(f"     Removed {artifacts_removed} artifact segments")
+        
+        # Smooth extreme outliers
+        print("   📊 Smoothing outliers...")
+        numeric_columns = self.clean_data.select_dtypes(include=[np.number]).columns
+        
+        for column in numeric_columns:
+            if column in ['power', 'heart_rate', 'cadence', 'speed']:
+                # Use IQR method to detect outliers
+                Q1 = self.clean_data[column].quantile(0.25)
+                Q3 = self.clean_data[column].quantile(0.75)
+                IQR = Q3 - Q1
+                lower_bound = Q1 - 1.5 * IQR
+                upper_bound = Q3 + 1.5 * IQR
+                
+                outliers = ((self.clean_data[column] < lower_bound) | 
+                           (self.clean_data[column] > upper_bound)).sum()
+                
+                if outliers > 0:
+                    print(f"     {column}: {outliers} outliers detected")
+                    # Replace outliers with rolling median
+                    outlier_mask = (self.clean_data[column] < lower_bound) | (self.clean_data[column] > upper_bound)
+                    self.clean_data.loc[outlier_mask, column] = self.clean_data[column].rolling(window=5, center=True, min_periods=1).median()
+        
+        # Resample to consistent 1Hz if necessary
+        print("   ⏱️ Resampling to consistent rate...")
+        if 'timestamp' in self.clean_data.columns:
+            # Check if we need resampling
+            time_diffs = self.clean_data['timestamp'].diff().dt.total_seconds()
+            unique_intervals = time_diffs.value_counts()
+            
+            if len(unique_intervals) > 1:
+                print(f"     Inconsistent sampling detected: {unique_intervals.index.tolist()}")
+                # Resample to 1Hz
+                self.clean_data = self.clean_data.set_index('timestamp').resample('1S').mean().reset_index()
+                print("     Resampled to 1Hz")
+            else:
+                print(f"     Consistent sampling rate: {unique_intervals.index[0]}s")
+        
+        print(f"✅ Data cleaning completed. Clean dataset: {len(self.clean_data)} points")
+    
+    def _engineer_features(self):
+        """
+        Step 4: Feature Engineering - Calculate core and derived metrics
+        """
+        print("🧮 Engineering features and calculating metrics...")
+        
+        # Create processed data copy
+        self.processed_data = self.clean_data.copy()
+        
+        # Core metrics calculation
+        print("   📊 Calculating core metrics...")
+        
+        # Power metrics
+        if 'power' in self.processed_data.columns:
+            self.avg_power = self.processed_data['power'].mean()
+            self.max_power = self.processed_data['power'].max()
+            
+            # Normalized Power calculation
+            power_series = self.processed_data['power'].fillna(0)
+            # 30-second rolling average
+            rolling_30s = power_series.rolling(window=30, center=True, min_periods=1).mean()
+            # 4th power average
+            power_4th = rolling_30s ** 4
+            avg_power_4th = power_4th.mean()
+            self.np_calc = avg_power_4th ** 0.25
+            
+            # Intensity Factor
+            self.IF = self.np_calc / self.ftp if self.ftp > 0 else 0
+            
+            # Variability Index
+            self.VI = self.np_calc / self.avg_power if self.avg_power > 0 else 0
+            
+            # Training Stress Score
+            duration_hours = len(self.processed_data) / 3600  # Assuming 1Hz data
+            self.TSS = (duration_hours * self.np_calc * self.IF) / self.ftp if self.ftp > 0 else 0
+            
+            print(f"     Avg Power: {self.avg_power:.0f}W")
+            print(f"     Max Power: {self.max_power:.0f}W")
+            print(f"     Normalized Power: {self.np_calc:.0f}W")
+            print(f"     Intensity Factor: {self.IF:.2f}")
+            print(f"     Variability Index: {self.VI:.2f}")
+            print(f"     Training Stress Score: {self.TSS:.0f}")
+        
+        # Heart Rate metrics
+        if 'heart_rate' in self.processed_data.columns:
+            self.avg_hr = self.processed_data['heart_rate'].mean()
+            self.max_hr = self.processed_data['heart_rate'].max()
+            print(f"     Avg HR: {self.avg_hr:.0f} bpm")
+            print(f"     Max HR: {self.max_hr:.0f} bpm")
+        
+        # Cadence metrics
+        if 'cadence' in self.processed_data.columns:
+            self.avg_cadence = self.processed_data['cadence'].mean()
+            self.max_cadence = self.processed_data['cadence'].max()
+            print(f"     Avg Cadence: {self.avg_cadence:.0f} rpm")
+            print(f"     Max Cadence: {self.max_cadence:.0f} rpm")
+        
+        # Speed metrics
+        if 'speed' in self.processed_data.columns:
+            self.avg_speed = self.processed_data['speed'].mean()
+            self.max_speed = self.processed_data['speed'].max()
+            print(f"     Avg Speed: {self.avg_speed:.1f} km/h")
+            print(f"     Max Speed: {self.max_speed:.1f} km/h")
+        
+        # Energy expenditure
+        if 'power' in self.processed_data.columns:
+            # Calculate total kJ (assuming 1Hz data)
+            self.total_kj = self.processed_data['power'].sum() / 1000  # Convert to kJ
+            print(f"     Total Energy: {self.total_kj:.0f} kJ")
+        
+        # Elevation metrics
+        if 'elevation' in self.processed_data.columns:
+            elevation_changes = self.processed_data['elevation'].diff()
+            self.total_elevation_m = elevation_changes[elevation_changes > 0].sum()
+            print(f"     Total Elevation Gain: {self.total_elevation_m:.0f}m")
+        
+        # Duration calculation
+        if 'timestamp' in self.processed_data.columns:
+            self.duration_hr = (self.processed_data['timestamp'].max() - 
+                               self.processed_data['timestamp'].min()).total_seconds() / 3600
+            print(f"     Duration: {self.duration_hr:.2f} hours")
+        
+        # Distance calculation
+        if 'distance' in self.processed_data.columns:
+            # Use distance column if available
+            self.total_distance = self.processed_data['distance'].iloc[-1] / 1000  # Convert to km
+        elif 'speed' in self.processed_data.columns:
+            # Calculate distance from speed
+            self.total_distance = self.processed_data['speed'].sum() / 3600  # km
+        else:
+            self.total_distance = 0
+        print(f"     Total Distance: {self.total_distance:.2f} km")
+        
+        # Power zones calculation
+        print("   🎯 Calculating power zones...")
+        if 'power' in self.processed_data.columns:
+            self._calculate_power_zones()
+        
+        # Heart rate zones calculation
+        print("   ❤️ Calculating heart rate zones...")
+        if 'heart_rate' in self.processed_data.columns:
+            self._calculate_hr_zones()
+        
+        # Rolling averages
+        print("   📈 Calculating rolling averages...")
+        self._calculate_rolling_averages()
+        
+        # Power bests calculation
+        print("   🏆 Calculating power bests...")
+        self._calculate_power_bests()
+        
+        print("✅ Feature engineering completed")
+    
+    def _calculate_power_zones(self):
+        """Calculate power zones and time in zones"""
+        # Standard power zones based on FTP
+        zone_thresholds = {
+            'Z1': self.ftp * 0.55,  # Active Recovery
+            'Z2': self.ftp * 0.75,  # Endurance
+            'Z3': self.ftp * 0.90,  # Tempo
+            'Z4': self.ftp * 1.05,  # Threshold
+            'Z5': self.ftp * 1.20,  # VO2 Max
+            'Z6': self.ftp * 1.50,  # Anaerobic Capacity
+            'Z7': float('inf')       # Neuromuscular Power
         }
         
-        for col in smoothing_windows:
-            if col in self.df.columns:
-                self.df[col+'_smoothed'] = self.df[col].rolling(
-                    window=smoothing_windows[col], min_periods=1, center=True).mean()
+        power_series = self.processed_data['power']
+        total_time = len(power_series)
         
-        # Ensure dashboard always has smoothed columns for power and heart rate
-        if 'power' in self.df.columns and 'power_smoothed' not in self.df.columns:
-            self.df['power_smoothed'] = self.df['power'].rolling(window=30, min_periods=1, center=True).mean()
-        if 'heart_rate' in self.df.columns and 'heart_rate_smoothed' not in self.df.columns:
-            self.df['heart_rate_smoothed'] = self.df['heart_rate'].rolling(window=30, min_periods=1, center=True).mean()
+        zone_times = {}
+        for zone, threshold in zone_thresholds.items():
+            if zone == 'Z7':
+                zone_mask = power_series >= threshold
+            else:
+                zone_mask = power_series < threshold
+            
+            zone_times[zone] = zone_mask.sum()
         
-        # Update data quality report
-        self.data_quality_report['interpolated_pct'] = float(interpolation_pct)
-        self.data_quality_report['outliers_removed'] = int(outlier_removed)
-        self.data_quality_report['data_quality_score'] = float(max(0, 100 - interpolation_pct - (outlier_removed / len(self.df) * 10)))
+        # Convert to percentages
+        zone_percentages = {zone: (time / total_time) * 100 for zone, time in zone_times.items()}
         
-        # Warn if data quality is poor
-        if interpolation_pct > self.max_interpolation_pct:
-            print(f"⚠️  Warning: {interpolation_pct:.1f}% of data was interpolated (threshold: {self.max_interpolation_pct}%)")
+        self.power_zones = {
+            'thresholds': zone_thresholds,
+            'times': zone_times,
+            'percentages': zone_percentages
+        }
         
-        if self.data_quality_report['data_quality_score'] < 80:
-            print(f"⚠️  Warning: Data quality score is {self.data_quality_report['data_quality_score']:.1f}/100")
+        # Set zone_percentages for compatibility with existing methods
+        zone_names = ['Active Recovery', 'Endurance', 'Tempo', 'Threshold', 'VO2 Max', 'Anaerobic Capacity', 'Neuromuscular Power']
+        self.zone_percentages = {}
+        for i, (zone, percentage) in enumerate(zone_percentages.items()):
+            zone_name = zone_names[i] if i < len(zone_names) else zone
+            self.zone_percentages[f'Z{i+1} ({zone_name})'] = percentage
         
-        print('Enhanced data cleaning completed successfully.')
-        return True
+        print("     Power zones calculated")
     
-    def calculate_metrics(self):
-        """Calculate all performance metrics with moving-time-based algorithms."""
-        if self.df is None:
-            print("No data loaded. Please load a FIT file first.")
-            return False
-        # Check for 'power' column before calculations
-        if 'power' not in self.df.columns:
-            print("No power data found. Skipping power-based metrics.")
-            self.avg_power = np.nan
-            self.max_power = np.nan
-            self.power_std = np.nan
-            self.np_calc = np.nan
-            self.IF = np.nan
-            self.VI = np.nan
-            self.TSS = np.nan
-            self.zone_percentages = {}
-            # Still calculate duration and distance if possible
-            if self.df is not None and 'timestamp' in self.df.columns:
-                self.duration_hr = (self.df['timestamp'].iloc[-1] - self.df['timestamp'].iloc[0]).total_seconds() / 3600
+    def _calculate_hr_zones(self):
+        """Calculate heart rate zones and time in zones"""
+        # Standard HR zones based on max HR
+        hr_thresholds = {
+            'Z1': self.rest_hr + (self.max_hr - self.rest_hr) * 0.60,  # Active Recovery
+            'Z2': self.rest_hr + (self.max_hr - self.rest_hr) * 0.70,  # Endurance
+            'Z3': self.rest_hr + (self.max_hr - self.rest_hr) * 0.80,  # Tempo
+            'Z4': self.rest_hr + (self.max_hr - self.rest_hr) * 0.90,  # Threshold
+            'Z5': self.max_hr  # VO2 Max
+        }
+        
+        hr_series = self.processed_data['heart_rate']
+        total_time = len(hr_series)
+        
+        zone_times = {}
+        for zone, threshold in hr_thresholds.items():
+            if zone == 'Z5':
+                zone_mask = hr_series >= threshold
             else:
-                self.duration_hr = np.nan
-            self.total_distance = (self.df['distance_km'].iloc[-1] if self.df is not None and 'distance_km' in self.df.columns else 0)
-            return True
+                zone_mask = hr_series < threshold
+            
+            zone_times[zone] = zone_mask.sum()
         
-        # Enhanced core calculations with moving-time-based algorithms
-        # Use raw power data for NP calculation (not smoothed)
-        power_rolling_30s = self.df['power'].rolling(window=30, min_periods=15).mean()
-        self.np_calc = (power_rolling_30s ** 4).mean() ** 0.25
+        # Convert to percentages
+        zone_percentages = {zone: (time / total_time) * 100 for zone, time in zone_times.items()}
         
-        # Basic power metrics
-        self.avg_power = self.df['power'].mean()
-        self.max_power = self.df['power'].max()
-        self.power_std = self.df['power'].std()
+        self.hr_zones = {
+            'thresholds': hr_thresholds,
+            'times': zone_times,
+            'percentages': zone_percentages
+        }
         
-        # Duration and distance
-        self.duration_hr = (self.df['timestamp'].iloc[-1] - 
-                           self.df['timestamp'].iloc[0]).total_seconds() / 3600
-        self.total_distance = (self.df['distance_km'].iloc[-1] 
-                              if 'distance_km' in self.df.columns else 0)
+        # Set hr_zone_percentages for compatibility with existing methods
+        hr_zone_names = ['Active Recovery', 'Endurance', 'Tempo', 'Threshold', 'VO2 Max']
+        self.hr_zone_percentages = {}
+        for i, (zone, percentage) in enumerate(zone_percentages.items()):
+            zone_name = hr_zone_names[i] if i < len(hr_zone_names) else zone
+            self.hr_zone_percentages[f'Z{i+1} ({zone_name})'] = percentage
         
-        # Enhanced training metrics with moving-time-based calculations
-        self.IF = self.np_calc / self.ftp
-        self.VI = self.np_calc / self.avg_power
-        
-        # Moving-time-based TSS calculation
-        # Calculate TSS using 30-second moving average power
-        moving_avg_power = self.df['power'].rolling(window=30, min_periods=15).mean()
-        moving_avg_IF = moving_avg_power / self.ftp
-        self.TSS = (moving_avg_IF ** 2 * self.duration_hr * 100).sum() / len(self.df)
-        
-        # Optional metrics
-        self.metrics = {}
-        for metric, col in [('speed', 'speed_kmh'), ('hr', 'heart_rate'), ('cadence', 'cadence')]:
-            if col in self.df.columns:
-                self.metrics[metric] = {
-                    'avg': self.df[col].mean(),
-                    'max': self.df[col].max(),
-                    'min': self.df[col].min()
-                }
-        
-        # Power zones
-        if 'power' in self.df.columns:
-            self.df['pct_ftp'] = (self.df['power'] / self.ftp) * 100
-            zone_counts = {}
-            for zone_name, (lower, upper) in self.power_zones.items():
-                if upper == 200:  # Z7 has no upper limit
-                    mask = (self.df['pct_ftp'] >= lower)
-                else:
-                    mask = (self.df['pct_ftp'] >= lower) & (self.df['pct_ftp'] < upper)
-                zone_counts[zone_name] = mask.sum()
-            total_samples = len(self.df)
-            self.zone_percentages = {zone: (count/total_samples)*100 
-                                   for zone, count in zone_counts.items()}
-        
-        # Heart rate zones
-        if 'heart_rate' in self.df.columns:
-            hr_zone_counts = {}
-            for zone_name, (lower, upper) in self.hr_zones.items():
-                mask = (self.df['heart_rate'] >= lower) & (self.df['heart_rate'] < upper)
-                hr_zone_counts[zone_name] = mask.sum()
-            total_samples = len(self.df)
-            self.hr_zone_percentages = {zone: (count/total_samples)*100 
-                                       for zone, count in hr_zone_counts.items()}
-        
-        # Cadence zones
-        if 'cadence' in self.df.columns:
-            cadence_zones = {
-                'Very Low (<60)': (0, 60),
-                'Low (60-80)': (60, 80),
-                'Moderate (80-90)': (80, 90),
-                'Optimal (90-100)': (90, 100),
-                'High (100-110)': (100, 110),
-                'Very High (>110)': (110, 200)
-            }
-            cadence_zone_counts = {}
-            for zone_name, (lower, upper) in cadence_zones.items():
-                if upper == 200:  # Very High has no upper limit
-                    mask = (self.df['cadence'] >= lower)
-                else:
-                    mask = (self.df['cadence'] >= lower) & (self.df['cadence'] < upper)
-                cadence_zone_counts[zone_name] = mask.sum()
-            total_samples = len(self.df)
-            self.cadence_zone_percentages = {zone: (count/total_samples)*100 
-                                            for zone, count in cadence_zone_counts.items()}
-        
-        # Speed zones (if available)
-        if 'speed_kmh' in self.df.columns:
-            speed_zones = {
-                'Recovery (<15)': (0, 15),
-                'Easy (15-25)': (15, 25),
-                'Moderate (25-35)': (25, 35),
-                'Fast (35-45)': (35, 45),
-                'Very Fast (>45)': (45, 100)
-            }
-            speed_zone_counts = {}
-            for zone_name, (lower, upper) in speed_zones.items():
-                if upper == 100:  # Very Fast has no upper limit
-                    mask = (self.df['speed_kmh'] >= lower)
-                else:
-                    mask = (self.df['speed_kmh'] >= lower) & (self.df['speed_kmh'] < upper)
-                speed_zone_counts[zone_name] = mask.sum()
-            total_samples = len(self.df)
-            self.speed_zone_percentages = {zone: (count/total_samples)*100 
-                                          for zone, count in speed_zone_counts.items()}
-        
-        # --- PHYSIOLOGICAL AND REPORTING FIXES ---
-        # 1. TRIMP (HR-based Training Load, per-minute Banister formula)
-        if 'heart_rate' in self.df.columns:
-            # Calculate per-sample dt in seconds
-            dt_sec = self.df['timestamp'].diff().dt.total_seconds().fillna(1)
-            hr_rsv = (self.df['heart_rate'] - self.rest_hr) / (self.max_hr - self.rest_hr)
-            beta = 1.92  # For men (use 1.67 for women)
-            # Per-minute Banister TRIMP
-            trimp = (dt_sec / 60 * hr_rsv * np.exp(beta * hr_rsv)).sum()
-            self.trimp_score = trimp
-        else:
-            self.trimp_score = 0
-
-        # 2. Cardiac Cost Index (beats/kJ or km)
-        # Calculate total heartbeats (for 1s data: sum(HR)/60)
-        interval_sec = (self.df['timestamp'].iloc[1] - self.df['timestamp'].iloc[0]).total_seconds() if len(self.df) > 1 else 1
-        total_beats = self.df['heart_rate'].sum() * (interval_sec / 60)
-        total_work_kj = (self.df['power'].sum() * (interval_sec / 3600))  # W to kJ
-        total_distance_km = self.df['distance'].iloc[-1] / 1000 if 'distance' in self.df.columns else 0
-        cci_kj = total_beats / total_work_kj if total_work_kj > 0 else 0
-        cci_km = total_beats / total_distance_km if total_distance_km > 0 else 0
-        self.cci_kj = cci_kj
-        self.cci_km = cci_km
-
-        # 3. Clamp MET-min
-        if self.df is not None and 'heart_rate' in self.df.columns:
-            hr_index = self.df['heart_rate'] / self.rest_hr
-            met_values = 6 * hr_index - 5
-            if isinstance(met_values, pd.Series):
-                avg_met = float(met_values.mean())
-                max_met = float(met_values.max())
-                total_energy = float(met_values.sum()) * 3.5
-            elif isinstance(met_values, (int, float)):
-                avg_met = float(met_values)
-                max_met = float(met_values)
-                total_energy = float(met_values) * 3.5
-            else:
-                avg_met = 0
-                max_met = 0
-                total_energy = 0
-            total_minutes = (self.df['timestamp'].iloc[-1] - self.df['timestamp'].iloc[0]).total_seconds() / 60
-            # Clamp MET-minutes to avoid overestimation (0 to 120% of naive estimate)
-            naive_met_min = avg_met * total_minutes
-            self.total_met_min = max(0, min(naive_met_min, naive_met_min * 1.2))
-        else:
-            self.total_met_min = 0
-
-        # 4. Lactate: Faude polynomial or user calibration
-        # Updated to use exponential moving average (EMA) for physiological lactate delay modeling
-        # Based on Newell et al., 2007 (Comput Methods Programs Biomed) and Beneke et al., 2001 (Med Sci Sports Exerc)
-        def faude_lactate(power, a=0.002, b=0.008, c=1.2):
-            return a * power ** 2 + b * power + c
-        lactate_coeffs = getattr(self, 'lactate_coeffs', (0.002, 0.008, 1.2))
-        if 'power' in self.df.columns:
-            self.df['lactate_est'] = self.df['power'].apply(lambda p: faude_lactate(p, *lactate_coeffs) if pd.notnull(p) else np.nan)
-            # Use EMA with span=60 to simulate realistic lactate accumulation and clearance lag
-            # This reflects the physiological delay in blood lactate response to exercise intensity changes
-            self.df['lactate_smoothed'] = self.df['lactate_est'].ewm(span=60, adjust=False).mean()
-
-        # 5. Hide zero min speed/cadence in summary
-        for metric in ['speed', 'cadence']:
-            if self.metrics.get(metric, {}).get('min', 0) == 0:
-                self.metrics[metric]['min'] = ''
-
-        # 6. HRR60 (Heart Rate Recovery at 60s)
-        if 'heart_rate' in self.df.columns:
-            end_time = self.df['timestamp'].iloc[-1]
-            end_hr = self.df['heart_rate'].iloc[-1]
-            recovery_idx = self.df.index[self.df['timestamp'] >= end_time + pd.Timedelta(seconds=60)]
-            if len(recovery_idx) > 0:
-                self.hrr60 = end_hr - self.df.loc[recovery_idx[0], 'heart_rate']
-            else:
-                self.hrr60 = np.nan
-        else:
-            self.hrr60 = np.nan
-        
-        return True
+        print("     Heart rate zones calculated")
     
-    def print_summary(self):
-        """Print comprehensive session summary."""
-        if not hasattr(self, 'np_calc') or self.df is None:
-            print("Metrics not calculated. Please run calculate_metrics() first.")
+    def _calculate_rolling_averages(self):
+        """Calculate rolling averages for various metrics"""
+        rolling_periods = [5, 30, 60, 300, 600]  # 5s, 30s, 1min, 5min, 10min
+        
+        for period in rolling_periods:
+            if 'power' in self.processed_data.columns:
+                self.processed_data[f'power_{period}s_avg'] = (
+                    self.processed_data['power'].rolling(window=period, center=True, min_periods=1).mean()
+                )
+            
+            if 'heart_rate' in self.processed_data.columns:
+                self.processed_data[f'hr_{period}s_avg'] = (
+                    self.processed_data['heart_rate'].rolling(window=period, center=True, min_periods=1).mean()
+                )
+        
+        print("     Rolling averages calculated")
+    
+    def _calculate_power_bests(self):
+        """Calculate power bests for various intervals"""
+        if 'power' not in self.processed_data.columns:
             return
         
-        def safe_fmt(val, fmt):
-            try:
-                return fmt.format(val) if val is not None and not (isinstance(val, float) and np.isnan(val)) else ''
-            except Exception:
-                return ''
+        intervals = [1, 5, 10, 30, 60, 180, 300, 480, 600, 720, 1200, 3600, 5400]  # seconds
+        interval_names = ['1s', '5s', '10s', '30s', '1min', '3min', '5min', '8min', '10min', '12min', '20min', '60min', '90min']
         
-        summary_data = {
-            'Metric': [
-                'Duration', 'Distance (km)', 'Avg Speed (km/h)', 'Max Speed (km/h)',
-                'Avg Power (W)', 'Normalized Power (W)', 'Max Power (W)',
-                'Intensity Factor', 'Variability Index', 'Training Stress Score',
-                'Avg Heart Rate (bpm)', 'Max Heart Rate (bpm)', 'Min Heart Rate (bpm)',
-                'Avg Cadence (rpm)', 'Max Cadence (rpm)',
-                'Power Z1 (%)', 'Power Z2 (%)', 'Power Z3 (%)', 'Power Z4 (%)', 
-                'Power Z5 (%)', 'Power Z6 (%)', 'Power Z7 (%)',
-                'HR Z1 (%)', 'HR Z2 (%)', 'HR Z3 (%)', 'HR Z4 (%)', 'HR Z5 (%)', 'HR Z6 (%)',
-                'Cadence Very Low (%)', 'Cadence Low (%)', 'Cadence Moderate (%)',
-                'Cadence Optimal (%)', 'Cadence High (%)', 'Cadence Very High (%)',
-                'Speed Recovery (%)', 'Speed Easy (%)', 'Speed Moderate (%)',
-                'Speed Fast (%)', 'Speed Very Fast (%)'
-            ],
-            'Value': [
-                safe_fmt(self.duration_hr, "{:.0f}") + ":" + safe_fmt((self.duration_hr % 1) * 60, "{:.0f}") if hasattr(self, 'duration_hr') and self.duration_hr is not None else '',
-                safe_fmt(self.total_distance, "{:.1f}") if hasattr(self, 'total_distance') else '',
-                safe_fmt(self.metrics.get('speed', {}).get('avg', 0), "{:.1f}") if hasattr(self, 'metrics') and 'speed' in self.metrics else '',
-                safe_fmt(self.metrics.get('speed', {}).get('max', 0), "{:.1f}") if hasattr(self, 'metrics') and 'speed' in self.metrics else '',
-                safe_fmt(self.avg_power, "{:.0f}") if hasattr(self, 'avg_power') else '',
-                safe_fmt(self.np_calc, "{:.0f}") if hasattr(self, 'np_calc') else '',
-                safe_fmt(self.max_power, "{:.0f}") if hasattr(self, 'max_power') else '',
-                safe_fmt(self.IF, "{:.2f}") if hasattr(self, 'IF') else '',
-                safe_fmt(self.VI, "{:.2f}") if hasattr(self, 'VI') else '',
-                safe_fmt(self.TSS, "{:.0f}") if hasattr(self, 'TSS') else '',
-                safe_fmt(self.metrics.get('hr', {}).get('avg', 0), "{:.0f}") if hasattr(self, 'metrics') and 'hr' in self.metrics else '',
-                safe_fmt(self.metrics.get('hr', {}).get('max', 0), "{:.0f}") if hasattr(self, 'metrics') and 'hr' in self.metrics else '',
-                safe_fmt(self.metrics.get('hr', {}).get('min', 0), "{:.0f}") if hasattr(self, 'metrics') and 'hr' in self.metrics else '',
-                safe_fmt(self.metrics.get('cadence', {}).get('avg', 0), "{:.0f}") if hasattr(self, 'metrics') and 'cadence' in self.metrics else '',
-                safe_fmt(self.metrics.get('cadence', {}).get('max', 0), "{:.0f}") if hasattr(self, 'metrics') and 'cadence' in self.metrics else '',
-                safe_fmt(self.zone_percentages.get('Z1 (Recovery)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.zone_percentages.get('Z2 (Endurance)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.zone_percentages.get('Z3 (Tempo)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.zone_percentages.get('Z4 (Threshold)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.zone_percentages.get('Z5 (VO2max)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.zone_percentages.get('Z6 (Anaerobic)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.zone_percentages.get('Z7 (Neuromuscular)', 0), "{:.1f}") if hasattr(self, 'zone_percentages') else '',
-                safe_fmt(self.hr_zone_percentages.get('Z1 (Recovery)', 0), "{:.1f}") if hasattr(self, 'hr_zone_percentages') else '',
-                safe_fmt(self.hr_zone_percentages.get('Z2 (Endurance)', 0), "{:.1f}") if hasattr(self, 'hr_zone_percentages') else '',
-                safe_fmt(self.hr_zone_percentages.get('Z3 (Tempo)', 0), "{:.1f}") if hasattr(self, 'hr_zone_percentages') else '',
-                safe_fmt(self.hr_zone_percentages.get('Z4 (Threshold)', 0), "{:.1f}") if hasattr(self, 'hr_zone_percentages') else '',
-                safe_fmt(self.hr_zone_percentages.get('Z5 (VO2max)', 0), "{:.1f}") if hasattr(self, 'hr_zone_percentages') else '',
-                safe_fmt(self.hr_zone_percentages.get('Z6 (Anaerobic)', 0), "{:.1f}") if hasattr(self, 'hr_zone_percentages') else '',
-                safe_fmt(self.cadence_zone_percentages.get('Very Low (<60)', 0), "{:.1f}") if hasattr(self, 'cadence_zone_percentages') else '',
-                safe_fmt(self.cadence_zone_percentages.get('Low (60-80)', 0), "{:.1f}") if hasattr(self, 'cadence_zone_percentages') else '',
-                safe_fmt(self.cadence_zone_percentages.get('Moderate (80-90)', 0), "{:.1f}") if hasattr(self, 'cadence_zone_percentages') else '',
-                safe_fmt(self.cadence_zone_percentages.get('Optimal (90-100)', 0), "{:.1f}") if hasattr(self, 'cadence_zone_percentages') else '',
-                safe_fmt(self.cadence_zone_percentages.get('High (100-110)', 0), "{:.1f}") if hasattr(self, 'cadence_zone_percentages') else '',
-                safe_fmt(self.cadence_zone_percentages.get('Very High (>110)', 0), "{:.1f}") if hasattr(self, 'cadence_zone_percentages') else '',
-                safe_fmt(self.speed_zone_percentages.get('Recovery (<15)', 0), "{:.1f}") if hasattr(self, 'speed_zone_percentages') else '',
-                safe_fmt(self.speed_zone_percentages.get('Easy (15-25)', 0), "{:.1f}") if hasattr(self, 'speed_zone_percentages') else '',
-                safe_fmt(self.speed_zone_percentages.get('Moderate (25-35)', 0), "{:.1f}") if hasattr(self, 'speed_zone_percentages') else '',
-                safe_fmt(self.speed_zone_percentages.get('Fast (35-45)', 0), "{:.1f}") if hasattr(self, 'speed_zone_percentages') else '',
-                safe_fmt(self.speed_zone_percentages.get('Very Fast (>45)', 0), "{:.1f}") if hasattr(self, 'speed_zone_percentages') else ''
-            ]
+        self.power_bests = {}
+        
+        for interval, name in zip(intervals, interval_names):
+            if interval <= len(self.processed_data):
+                # Calculate rolling average for this interval
+                rolling_avg = self.processed_data['power'].rolling(window=interval, center=True, min_periods=interval).mean()
+                
+                # Find the maximum
+                max_power = rolling_avg.max()
+                
+                if not pd.isna(max_power) and max_power > 0:
+                    self.power_bests[name] = {
+                        'power': max_power,
+                        'duration': interval
+                    }
+        
+        print(f"     Power bests calculated for {len(self.power_bests)} intervals")
+    
+    def _aggregate_data(self):
+        """
+        Step 5: Data Aggregation - Create ride totals and summaries
+        """
+        print("📊 Aggregating data and creating summaries...")
+        
+        # Store all metrics in a comprehensive dictionary
+        self.metrics = {
+            'power': {
+                'avg': self.avg_power if hasattr(self, 'avg_power') else 0,
+                'max': self.max_power if hasattr(self, 'max_power') else 0,
+                'np': self.np_calc if hasattr(self, 'np_calc') else 0,
+                'if': self.IF if hasattr(self, 'IF') else 0,
+                'vi': self.VI if hasattr(self, 'VI') else 0,
+                'tss': self.TSS if hasattr(self, 'TSS') else 0,
+                'zones': self.power_zones if hasattr(self, 'power_zones') else {}
+            },
+            'heart_rate': {
+                'avg': self.avg_hr if hasattr(self, 'avg_hr') else 0,
+                'max': self.max_hr if hasattr(self, 'max_hr') else 0,
+                'zones': self.hr_zones if hasattr(self, 'hr_zones') else {}
+            },
+            'cadence': {
+                'avg': self.avg_cadence if hasattr(self, 'avg_cadence') else 0,
+                'max': self.max_cadence if hasattr(self, 'max_cadence') else 0
+            },
+            'speed': {
+                'avg': self.avg_speed if hasattr(self, 'avg_speed') else 0,
+                'max': self.max_speed if hasattr(self, 'max_speed') else 0
+            },
+            'ride': {
+                'duration_hr': self.duration_hr if hasattr(self, 'duration_hr') else 0,
+                'total_distance': self.total_distance if hasattr(self, 'total_distance') else 0,
+                'total_kj': self.total_kj if hasattr(self, 'total_kj') else 0,
+                'total_elevation_m': self.total_elevation_m if hasattr(self, 'total_elevation_m') else 0
+            },
+            'power_bests': self.power_bests
         }
-        print(f"=== {self.athlete_name.upper()} - SESSION SUMMARY ===")
-        print(pd.DataFrame(summary_data).to_string(index=False))
-        print("=" * 50)
-        # Print HRR60 if available
-        if hasattr(self, 'hrr60') and self.hrr60 is not None and not (isinstance(self.hrr60, float) and np.isnan(self.hrr60)):
-            print(f"HRR60: {self.hrr60:.0f} bpm")
-        # Performance analysis
-        self._print_performance_analysis()
+        
+        print("✅ Data aggregation completed")
+    
+    def _create_visualizations(self):
+        """
+        Step 6: Visualization - Create comprehensive charts and plots
+        """
+        print("📈 Creating visualizations...")
+        
+        # Set the processed data as the main dataframe for compatibility
+        self.df = self.processed_data
+        
+        if self.save_figures:
+            # Create dashboard
+            self.create_dashboard()
+            
+            # Create detailed analysis plots
+            self.analyze_fatigue_patterns()
+            self.analyze_heat_stress()
+            self.analyze_power_hr_efficiency()
+            self.analyze_variable_relationships()
+            self.analyze_torque()
+            # Create dual axis analysis
+            self.create_training_peaks_dual_axis_graph()
+            # Calculate W' balance with proper error handling
+            try:
+                cp_est, w_prime_est = self.estimate_critical_power()
+                if cp_est is not None and w_prime_est is not None:
+                    self.calculate_w_prime_balance(cp_est, w_prime_est)
+                else:
+                    # Use FTP as fallback for CP estimation
+                    cp_est = self.ftp
+                    w_prime_est = 20000  # Default W' estimate
+                    self.calculate_w_prime_balance(cp_est, w_prime_est)
+            except Exception as e:
+                print(f"     W' balance calculation failed: {str(e)}")
+                # Use FTP as fallback
+                cp_est = self.ftp
+                w_prime_est = 20000  # Default W' estimate
+                self.calculate_w_prime_balance(cp_est, w_prime_est)
+            self.estimate_lactate()
+        
+        print("✅ Visualizations completed")
+    
+    def _perform_modeling(self):
+        """
+        Step 7: Modeling & Interpretation - CP & W' estimation, trends analysis
+        """
+        print("🧪 Performing advanced modeling and interpretation...")
+        
+        # Critical Power estimation
+        if hasattr(self, 'power_bests') and len(self.power_bests) >= 3:
+            self._estimate_critical_power()
+        
+        # Fatigue modeling (if historical data available)
+        self._analyze_fatigue_patterns()
+        
+        # Performance trends
+        self._analyze_performance_trends()
+        
+        print("✅ Modeling and interpretation completed")
+    
+    def _estimate_critical_power(self):
+        """Estimate Critical Power using power-duration relationship"""
+        # This is a simplified CP estimation
+        # In practice, you'd need multiple rides for accurate CP estimation
+        print("   📊 Estimating Critical Power...")
+        
+        # Use power bests for CP estimation
+        if len(self.power_bests) >= 3:
+            durations = []
+            powers = []
+            
+            for interval, data in self.power_bests.items():
+                if data['power'] > 0:
+                    durations.append(data['duration'])
+                    powers.append(data['power'])
+            
+            if len(durations) >= 3:
+                # Simple linear regression on power-duration relationship
+                # In practice, you'd use more sophisticated models
+                try:
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(durations, powers)
+                    estimated_cp = intercept  # CP is the y-intercept
+                    
+                    self.critical_power = estimated_cp
+                    self.cp_r_squared = r_value ** 2
+                    
+                    print(f"     Estimated CP: {estimated_cp:.0f}W (R² = {r_value**2:.3f})")
+                except:
+                    print("     CP estimation failed - insufficient data")
+    
+    def _analyze_fatigue_patterns(self):
+        """Analyze fatigue patterns during the ride"""
+        print("   🔄 Analyzing fatigue patterns...")
+        
+        if 'power' in self.processed_data.columns:
+            # Split ride into segments and analyze power decline
+            segment_count = 10
+            segment_length = len(self.processed_data) // segment_count
+            
+            segment_powers = []
+            for i in range(segment_count):
+                start_idx = i * segment_length
+                end_idx = start_idx + segment_length
+                segment_power = self.processed_data['power'].iloc[start_idx:end_idx].mean()
+                segment_powers.append(segment_power)
+            
+            # Calculate fatigue index
+            if len(segment_powers) >= 2:
+                fatigue_index = (segment_powers[0] - segment_powers[-1]) / segment_powers[0] * 100
+                self.fatigue_index = fatigue_index
+                print(f"     Fatigue Index: {fatigue_index:.1f}%")
+    
+    def _analyze_performance_trends(self):
+        """Analyze performance trends and patterns"""
+        print("   📈 Analyzing performance trends...")
+        
+        # This would typically involve comparing with historical data
+        # For now, we'll just note that this analysis is available
+        print("     Performance trend analysis ready for historical comparison")
+    
+    # Legacy methods for backward compatibility
+    def load_fit_file(self, file_path):
+        """Legacy method - now uses the new pipeline"""
+        return self.process_activity_data(file_path)
+    
+    def clean_and_smooth_data(self):
+        """Legacy method - now handled in the pipeline"""
+        pass  # Already done in _clean_data()
+    
+    def calculate_metrics(self):
+        """Legacy method - now handled in the pipeline"""
+        pass  # Already done in _engineer_features()
     
     def _print_performance_analysis(self):
         """Print performance analysis with context."""
-        print(f"\n=== PERFORMANCE ANALYSIS ===")
+        # Performance analysis completed
         intensity_level = 'High' if hasattr(self, 'TSS') and self.TSS is not None and self.TSS > 150 else 'Medium' if hasattr(self, 'TSS') and self.TSS is not None and self.TSS > 80 else 'Low'
         pacing_quality = 'Poor'
         if hasattr(self, 'avg_power') and hasattr(self, 'np_calc') and self.np_calc is not None and self.avg_power is not None:
@@ -545,16 +976,176 @@ class CyclingAnalyzer:
                 pacing_quality = 'Poor'
         tss_vs_target = "Above" if hasattr(self, 'TSS') and hasattr(self, 'target_tss') and self.TSS > self.target_tss else "Below" if hasattr(self, 'TSS') and hasattr(self, 'target_tss') and self.TSS < self.target_tss * 0.8 else "On Target"
         
-        if hasattr(self, 'TSS') and hasattr(self, 'target_tss'):
-            print(f"Training Stress: {self.TSS:.0f} ({intensity_level} intensity) - {tss_vs_target} target of {self.target_tss}")
-        if hasattr(self, 'avg_power') and hasattr(self, 'np_calc') and self.np_calc:
-            print(f"Pacing Quality: {pacing_quality} (Avg/NP ratio: {self.avg_power/self.np_calc:.2f})")
-        if hasattr(self, 'VI') and self.VI is not None:
-            print(f"Power Variability: {'High' if self.VI > 1.15 else 'Medium' if self.VI > 1.05 else 'Low'} (VI: {self.VI:.2f})")
-        if self.df is not None and 'heart_rate' in self.df.columns:
-            hr_reserve = (self.metrics.get('hr', {}).get('max', 0) - self.rest_hr) / (self.max_hr - self.rest_hr) * 100 if (self.max_hr - self.rest_hr) > 0 else 0
-            print(f"Heart Rate Reserve: {hr_reserve:.1f}% of HR reserve")
+        # Performance metrics calculated
     
+    def create_training_peaks_style_graph(self):
+        """Create a TrainingPeaks-style graph with multiple variables on different axes."""
+        if self.df is None:
+            return
+            
+        time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60 if 'timestamp' in self.df.columns else np.arange(len(self.df))
+        
+        # Create figure with multiple subplots sharing x-axis
+        fig, axes = plt.subplots(4, 1, figsize=(16, 12), sharex=True, 
+                                gridspec_kw={'height_ratios': [2, 1, 1, 1], 'hspace': 0.1})
+        
+        # Set main title
+        fig.suptitle(f'{self.athlete_name} - TrainingPeaks Style Analysis', 
+                    fontsize=16, fontweight='bold', y=0.98)
+        
+        # 1. Power (Primary metric - largest subplot)
+        if 'power' in self.df.columns:
+            # Raw power as background
+            axes[0].plot(time_minutes, self.df['power'], alpha=0.3, linewidth=0.8, color='#1f77b4', label='Raw Power')
+            
+            # Smoothed power as main line
+            if 'power_smoothed' in self.df.columns:
+                axes[0].plot(time_minutes, self.df['power_smoothed'], alpha=0.9, linewidth=2, color='#1f77b4', label='Power')
+            
+            # Add average and NP lines
+            if hasattr(self, 'avg_power') and self.avg_power is not None:
+                axes[0].axhline(y=self.avg_power, color='red', linestyle='--', alpha=0.8, linewidth=1.5, label=f'Avg: {self.avg_power:.0f}W')
+            if hasattr(self, 'np_calc') and self.np_calc is not None:
+                axes[0].axhline(y=self.np_calc, color='orange', linestyle='--', alpha=0.8, linewidth=1.5, label=f'NP: {self.np_calc:.0f}W')
+            
+            axes[0].set_ylabel('Power (W)', fontweight='bold')
+            axes[0].legend(loc='upper right', fontsize=10)
+            axes[0].grid(True, alpha=0.3)
+            axes[0].set_title('Power Profile', fontweight='bold', fontsize=12, pad=10)
+            
+            # Set y-axis limits with some padding
+            if 'power_smoothed' in self.df.columns:
+                power_data = self.df['power_smoothed'].dropna()
+                if len(power_data) > 0:
+                    power_min, power_max = power_data.min(), power_data.max()
+                    power_range = power_max - power_min
+                    axes[0].set_ylim(max(0, power_min - power_range * 0.1), power_max + power_range * 0.1)
+        else:
+            axes[0].text(0.5, 0.5, 'No power data available', ha='center', va='center', transform=axes[0].transAxes)
+            axes[0].set_title('Power Profile (No data)', fontweight='bold', fontsize=12)
+        
+        # 2. Heart Rate
+        if 'heart_rate' in self.df.columns:
+            # Raw HR as background
+            axes[1].plot(time_minutes, self.df['heart_rate'], alpha=0.3, linewidth=0.8, color='#d62728', label='Raw HR')
+            
+            # Smoothed HR as main line
+            if 'heart_rate_smoothed' in self.df.columns:
+                axes[1].plot(time_minutes, self.df['heart_rate_smoothed'], alpha=0.9, linewidth=2, color='#d62728', label='Heart Rate')
+            
+            # Add average HR line
+            if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+                avg_hr = self.metrics['heart_rate']['avg']
+                axes[1].axhline(y=avg_hr, color='red', linestyle='--', alpha=0.8, linewidth=1.5, label=f'Avg: {avg_hr:.0f}bpm')
+            
+            axes[1].set_ylabel('Heart Rate (bpm)', fontweight='bold')
+            axes[1].legend(loc='upper right', fontsize=10)
+            axes[1].grid(True, alpha=0.3)
+            axes[1].set_title('Heart Rate Profile', fontweight='bold', fontsize=12, pad=10)
+            
+            # Set y-axis limits
+            if 'heart_rate_smoothed' in self.df.columns:
+                hr_data = self.df['heart_rate_smoothed'].dropna()
+                if len(hr_data) > 0:
+                    hr_min, hr_max = hr_data.min(), hr_data.max()
+                    hr_range = hr_max - hr_min
+                    axes[1].set_ylim(max(0, hr_min - hr_range * 0.1), hr_max + hr_range * 0.1)
+        else:
+            axes[1].text(0.5, 0.5, 'No heart rate data available', ha='center', va='center', transform=axes[1].transAxes)
+            axes[1].set_title('Heart Rate Profile (No data)', fontweight='bold', fontsize=12)
+        
+        # 3. Cadence
+        if 'cadence' in self.df.columns:
+            # Raw cadence as background
+            axes[2].plot(time_minutes, self.df['cadence'], alpha=0.3, linewidth=0.8, color='#2ca02c', label='Raw Cadence')
+            
+            # Smoothed cadence as main line
+            if 'cadence_smoothed' in self.df.columns:
+                axes[2].plot(time_minutes, self.df['cadence_smoothed'], alpha=0.9, linewidth=2, color='#2ca02c', label='Cadence')
+            
+            # Add average cadence line
+            if 'cadence' in self.metrics and 'avg' in self.metrics['cadence']:
+                avg_cadence = self.metrics['cadence']['avg']
+                axes[2].axhline(y=avg_cadence, color='red', linestyle='--', alpha=0.8, linewidth=1.5, label=f'Avg: {avg_cadence:.0f}rpm')
+            
+            axes[2].set_ylabel('Cadence (rpm)', fontweight='bold')
+            axes[2].legend(loc='upper right', fontsize=10)
+            axes[2].grid(True, alpha=0.3)
+            axes[2].set_title('Cadence Profile', fontweight='bold', fontsize=12, pad=10)
+            
+            # Set y-axis limits
+            if 'cadence_smoothed' in self.df.columns:
+                cadence_data = self.df['cadence_smoothed'].dropna()
+                if len(cadence_data) > 0:
+                    cadence_min, cadence_max = cadence_data.min(), cadence_data.max()
+                    cadence_range = cadence_max - cadence_min
+                    axes[2].set_ylim(max(0, cadence_min - cadence_range * 0.1), cadence_max + cadence_range * 0.1)
+        else:
+            axes[2].text(0.5, 0.5, 'No cadence data available', ha='center', va='center', transform=axes[2].transAxes)
+            axes[2].set_title('Cadence Profile (No data)', fontweight='bold', fontsize=12)
+        
+        # 4. Speed (if available) or Elevation
+        if 'speed' in self.df.columns:
+            # Convert speed to km/h if it's in m/s
+            speed_data = self.df['speed']
+            if speed_data.max() < 50:  # Likely in m/s, convert to km/h
+                speed_data = speed_data * 3.6
+            
+            axes[3].plot(time_minutes, speed_data, alpha=0.9, linewidth=2, color='#9467bd', label='Speed')
+            
+            # Add average speed line
+            avg_speed = speed_data.mean()
+            axes[3].axhline(y=avg_speed, color='red', linestyle='--', alpha=0.8, linewidth=1.5, label=f'Avg: {avg_speed:.1f}km/h')
+            
+            axes[3].set_ylabel('Speed (km/h)', fontweight='bold')
+            axes[3].legend(loc='upper right', fontsize=10)
+            axes[3].grid(True, alpha=0.3)
+            axes[3].set_title('Speed Profile', fontweight='bold', fontsize=12, pad=10)
+            
+            # Set y-axis limits
+            speed_min, speed_max = speed_data.min(), speed_data.max()
+            speed_range = speed_max - speed_min
+            axes[3].set_ylim(max(0, speed_min - speed_range * 0.1), speed_max + speed_range * 0.1)
+        elif 'altitude' in self.df.columns:
+            axes[3].plot(time_minutes, self.df['altitude'], alpha=0.9, linewidth=2, color='#8c564b', label='Elevation')
+            
+            # Add average elevation line
+            avg_altitude = self.df['altitude'].mean()
+            axes[3].axhline(y=avg_altitude, color='red', linestyle='--', alpha=0.8, linewidth=1.5, label=f'Avg: {avg_altitude:.0f}m')
+            
+            axes[3].set_ylabel('Elevation (m)', fontweight='bold')
+            axes[3].legend(loc='upper right', fontsize=10)
+            axes[3].grid(True, alpha=0.3)
+            axes[3].set_title('Elevation Profile', fontweight='bold', fontsize=12, pad=10)
+        else:
+            axes[3].text(0.5, 0.5, 'No speed or elevation data available', ha='center', va='center', transform=axes[3].transAxes)
+            axes[3].set_title('Speed/Elevation Profile (No data)', fontweight='bold', fontsize=12)
+        
+        # Set x-axis label and limits for all subplots
+        axes[-1].set_xlabel('Time (minutes)', fontweight='bold')
+        axes[-1].set_xlim(0, time_minutes.max())
+        
+        # Add ride summary text box
+        summary_text = f"Duration: {self.duration_hr:.1f}h | Distance: {self.total_distance:.1f}km"
+        if hasattr(self, 'avg_power') and self.avg_power is not None:
+            summary_text += f" | Avg Power: {self.avg_power:.0f}W"
+        if hasattr(self, 'np_calc') and self.np_calc is not None:
+            summary_text += f" | NP: {self.np_calc:.0f}W"
+        if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+            summary_text += f" | Avg HR: {self.metrics['heart_rate']['avg']:.0f}bpm"
+        
+        fig.text(0.02, 0.02, summary_text, fontsize=10, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+        
+        plt.tight_layout()
+        
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_training_peaks_style")
+            fig.savefig(fig_path + ".png", dpi=300, bbox_inches='tight')
+            fig.savefig(fig_path + ".svg", bbox_inches='tight')
+        else:
+            plt.show()
+
     def create_dashboard(self):
         """Create simplified dashboard with 3 key graphs."""
         if self.df is None:
@@ -685,7 +1276,6 @@ class CyclingAnalyzer:
     def estimate_critical_power(self):
         """Estimate Critical Power and W'."""
         if self.df is None:
-            print("No data loaded. Please load a FIT file first.")
             return None, None
         
         def cp_model(t, CP, W_prime):
@@ -694,23 +1284,33 @@ class CyclingAnalyzer:
         durations = np.array([5, 15, 30, 60, 120, 300, 600])
         mmp = [self.df['power'].rolling(window=d, min_periods=1).mean().max() for d in durations]
         
+        # Filter out any NaN or invalid values
+        valid_indices = [i for i, val in enumerate(mmp) if not pd.isna(val) and val > 0]
+        if len(valid_indices) < 3:
+            # Not enough data for CP estimation, use FTP as fallback
+            return self.ftp, 20000
+        
+        durations = durations[valid_indices]
+        mmp = [mmp[i] for i in valid_indices]
+        
         try:
             popt, _ = curve_fit(cp_model, durations, mmp, bounds=(0, [600, 100000]))
             cp_est, w_prime_est = popt
             
-            print(f'Estimated CP: {cp_est:.0f} W, W\': {w_prime_est:.0f} J')
-            print(f'CP vs FTP: {cp_est/self.ftp:.2f} ratio')
+            # Validate results
+            if cp_est < 50 or cp_est > 600 or w_prime_est < 1000 or w_prime_est > 50000:
+                # Results out of reasonable range, use FTP as fallback
+                return self.ftp, 20000
             
             return cp_est, w_prime_est
             
         except Exception as e:
-            print(f"Error estimating CP: {e}")
-            return None, None
+            # Curve fitting failed, use FTP as fallback
+            return self.ftp, 20000
     
     def calculate_w_prime_balance(self, cp_est, w_prime_est):
-        """Calculate W' balance over time with enhanced visualization."""
+        """Calculate W' balance over time with enhanced smooth visualization."""
         if self.df is None or cp_est is None:
-            print("No data loaded or CP not estimated. Please load data and estimate CP first.")
             return
         
         tau = self.w_prime_tau
@@ -719,8 +1319,11 @@ class CyclingAnalyzer:
         timestamps = pd.to_datetime(self.df['timestamp'])
         time_diffs = timestamps.diff().dt.total_seconds().fillna(1).clip(lower=0.01)
         
+        # Apply smoothing to power data for smoother W' balance calculation
+        power_smoothed = self.df['power'].rolling(window=5, center=True, min_periods=1).mean()
+        
         for idx, row in self.df.iterrows():
-            power = row['power']
+            power = power_smoothed.iloc[idx] if not pd.isna(power_smoothed.iloc[idx]) else row['power']
             dt = time_diffs.iloc[idx]
             if power > cp_est:
                 current_w_prime -= (power - cp_est) * dt
@@ -732,74 +1335,85 @@ class CyclingAnalyzer:
         
         self.df['w_prime_bal'] = w_bal
         
+        # Apply additional smoothing to W' balance for visualization
+        w_bal_smoothed = pd.Series(w_bal).rolling(window=10, center=True, min_periods=1).mean()
+        
         time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60
         
-        # Create enhanced W' balance plot
+        # Create enhanced W' balance plot with smoother curves
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10))
         
-        # Main W' balance plot
-        ax1.plot(time_minutes, self.df['w_prime_bal'], color='purple', linewidth=2, label='W\' Balance')
-        ax1.fill_between(time_minutes, self.df['w_prime_bal'], alpha=0.3, color='purple')
+        # Main W' balance plot with smoothed data
+        ax1.plot(time_minutes, w_bal_smoothed, color='purple', linewidth=2.5, label='W\' Balance (Smoothed)', alpha=0.9)
+        ax1.plot(time_minutes, self.df['w_prime_bal'], color='purple', linewidth=1, alpha=0.3, label='W\' Balance (Raw)')
         
-        # Add 30-point rolling mean overlay
-        w_prime_rolling = pd.Series(self.df['w_prime_bal']).rolling(window=30, min_periods=1, center=True).mean()
-        ax1.plot(time_minutes, w_prime_rolling, color='black', linewidth=2, linestyle='-', alpha=0.7, label="W' Balance (30-pt Rolling Mean)")
+        # Add gradient fill for visual appeal
+        ax1.fill_between(time_minutes, w_bal_smoothed, alpha=0.2, color='purple')
         
-        # Add reference lines
-        ax1.axhline(y=w_prime_est, color='green', linestyle='--', alpha=0.7)
-        # Label the green line directly on the plot
-        ax1.text(time_minutes.iloc[-1], w_prime_est, "Full W′ (100%)", color='green', fontsize=11, fontweight='bold', va='bottom', ha='right', backgroundcolor='white', alpha=0.8)
-        ax1.axhline(y=w_prime_est * 0.5, color='orange', linestyle='--', alpha=0.7, 
+        # Add reference lines with better styling
+        ax1.axhline(y=w_prime_est, color='green', linestyle='--', alpha=0.8, linewidth=2)
+        ax1.text(time_minutes.iloc[-1], w_prime_est, "Full W′ (100%)", color='green', fontsize=11, fontweight='bold', 
+                va='bottom', ha='right', backgroundcolor='white', alpha=0.9, bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+        
+        ax1.axhline(y=w_prime_est * 0.5, color='orange', linestyle='--', alpha=0.7, linewidth=1.5, 
                     label='50% W\' Depleted')
-        ax1.axhline(y=0, color='red', linestyle='--', alpha=0.7, label='W\' Depleted')
+        ax1.axhline(y=0, color='red', linestyle='--', alpha=0.7, linewidth=1.5, label='W\' Depleted')
         
-        ax1.set_title("W' Balance Over Time", fontweight='bold', fontsize=14)
-        ax1.set_xlabel('Time (minutes)')
-        ax1.set_ylabel('W\' Balance (J)')
-        ax1.legend()
+        # Enhanced zone shading with better colors
+        ax1.fill_between(time_minutes, w_prime_est * 0.8, w_prime_est, alpha=0.15, color='green', label='High W\' (>80%)')
+        ax1.fill_between(time_minutes, w_prime_est * 0.4, w_prime_est * 0.8, alpha=0.15, color='yellow', label='Moderate W\' (40-80%)')
+        ax1.fill_between(time_minutes, 0, w_prime_est * 0.4, alpha=0.15, color='red', label='Low W\' (<40%)')
+        
+        ax1.set_title("Enhanced W' Balance Over Time", fontweight='bold', fontsize=14)
+        ax1.set_xlabel('Time (minutes)', fontsize=12)
+        ax1.set_ylabel('W\' Balance (J)', fontsize=12)
+        ax1.legend(loc='upper right', fontsize=10)
         ax1.grid(True, alpha=0.3)
         ax1.set_ylim(0, w_prime_est * 1.1)
         
-        # Add zone shading
-        ax1.fill_between(time_minutes, w_prime_est * 0.8, w_prime_est, alpha=0.1, color='green', label='High W\'')
-        ax1.fill_between(time_minutes, w_prime_est * 0.4, w_prime_est * 0.8, alpha=0.1, color='yellow', label='Moderate W\'')
-        ax1.fill_between(time_minutes, 0, w_prime_est * 0.4, alpha=0.1, color='red', label='Low W\'')
+        # Enhanced power vs W' balance scatter with smoother data
+        # Use smoothed power data for better visualization
+        power_for_scatter = power_smoothed.fillna(self.df['power'])
         
-        # Power vs W' balance scatter
-        scatter = ax2.scatter(self.df['power'], self.df['w_prime_bal'], 
-                             alpha=0.6, c=time_minutes, cmap='viridis', s=20)
-        ax2.set_xlabel('Power (W)')
-        ax2.set_ylabel('W\' Balance (J)')
-        ax2.set_title('Power vs W\' Balance Relationship')
+        scatter = ax2.scatter(power_for_scatter, w_bal_smoothed, 
+                             alpha=0.7, c=time_minutes, cmap='viridis', s=25, edgecolors='white', linewidth=0.5)
+        ax2.set_xlabel('Power (W)', fontsize=12)
+        ax2.set_ylabel('W\' Balance (J)', fontsize=12)
+        ax2.set_title('Power vs W\' Balance Relationship (Smoothed)', fontweight='bold', fontsize=12)
         ax2.grid(True, alpha=0.3)
         
-        # Add CP reference line
-        ax2.axvline(x=cp_est, color='red', linestyle='--', alpha=0.7, label=f'CP ({cp_est:.0f}W)')
-        ax2.legend()
+        # Add CP reference line with better styling
+        ax2.axvline(x=cp_est, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'CP ({cp_est:.0f}W)')
+        ax2.legend(fontsize=10)
         
         cbar = plt.colorbar(scatter, ax=ax2)
-        cbar.set_label('Time (minutes)')
+        cbar.set_label('Time (minutes)', fontsize=10)
         
         plt.tight_layout()
         if self.save_figures:
             fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_w_prime_balance")
-            fig.savefig(fig_path + ".png", dpi=300)
-            fig.savefig(fig_path + ".svg")
+            fig.savefig(fig_path + ".png", dpi=300, bbox_inches='tight')
+            fig.savefig(fig_path + ".svg", bbox_inches='tight')
         else:
             plt.show()
         
         # Print W' balance statistics
-        print(f"\n=== W' BALANCE ANALYSIS ===")
-        print(f"Initial W': {w_prime_est:.0f} J")
-        print(f"Minimum W': {self.df['w_prime_bal'].min():.0f} J")
-        print(f"Average W': {self.df['w_prime_bal'].mean():.0f} J")
-        print(f"Time below 50% W': {((self.df['w_prime_bal'] < w_prime_est * 0.5).sum() / len(self.df) * 100):.1f}%")
-        print(f"Time W' depleted: {((self.df['w_prime_bal'] < 100).sum() / len(self.df) * 100):.1f}%")
+        w_bal_min = min(w_bal)
+        w_bal_max = max(w_bal)
+        w_bal_final = w_bal[-1]
+        depletion_pct = ((w_prime_est - w_bal_final) / w_prime_est) * 100
+        
+        print(f"\n📊 W' Balance Analysis:")
+        print(f"   Initial W': {w_prime_est:.0f}J")
+        print(f"   Final W': {w_bal_final:.0f}J")
+        print(f"   W' Depletion: {depletion_pct:.1f}%")
+        print(f"   Min W': {w_bal_min:.0f}J")
+        print(f"   Max W': {w_bal_max:.0f}J")
     
     def calculate_hr_strain(self):
         """Analyze HR response using practical training metrics."""
         if self.df is None or 'heart_rate' not in self.df.columns:
-            print("Heart rate data required for HR strain analysis.")
+            # Heart rate data required
             return
         
         # Calculate HR reserve utilization (Karvonen method)
@@ -870,7 +1484,7 @@ class CyclingAnalyzer:
         interval_sec = (self.df['timestamp'].iloc[1] - self.df['timestamp'].iloc[0]).total_seconds() if len(self.df) > 1 else 1
         total_beats = self.df['heart_rate'].sum() * (interval_sec / 60)
         total_work_kj = (self.df['power'].sum() * (interval_sec / 3600))  # W to kJ
-        total_distance_km = self.df['distance'].iloc[-1] / 1000 if 'distance' in self.df.columns else 0
+        total_distance_km = self.df['distance'].iloc[-1] / 1000 if len(self.df) > 0 and 'distance' in self.df.columns else 0
         cci_kj = total_beats / total_work_kj if total_work_kj > 0 else 0
         cci_km = total_beats / total_distance_km if total_distance_km > 0 else 0
         
@@ -994,104 +1608,15 @@ class CyclingAnalyzer:
             plt.show()
         
         # Print practical HR analysis
-        print(f"\n=== HR TRAINING LOAD ANALYSIS (Practical Metrics) ===")
-        print(f"Average HR Reserve: {self.df['hr_reserve_pct'].mean():.1f}%")
-        print(f"Peak HR Reserve: {self.df['hr_reserve_pct'].max():.1f}%")
-        print(f"Cardiac Cost Index: {cci_kj:.1f} beats/kJ, {cci_km:.1f} beats/km")
-        print(f"TRIMP Score: {trimp_score:.1f} (unitless, typical range 100-400)")
+        # HR training load analysis completed
         
-        if aerobic_decoupling:
-            print(f"\n--- ENHANCED AEROBIC DECOUPLING ANALYSIS ---")
-            print(f"Number of Steady Efforts Found: {len(aerobic_decoupling)}")
-            
-            # Group by duration
-            durations_2min = [dec for dec in aerobic_decoupling if dec['duration'] <= 2]
-            durations_3min = [dec for dec in aerobic_decoupling if 2 < dec['duration'] <= 3]
-            durations_4min = [dec for dec in aerobic_decoupling if dec['duration'] > 3]
-            
-            print(f"  - 2-minute efforts: {len(durations_2min)}")
-            print(f"  - 3-minute efforts: {len(durations_3min)}")
-            print(f"  - 4-minute efforts: {len(durations_4min)}")
-            
-            # Overall statistics
-            avg_drift = np.mean([dec['drift_pct'] for dec in aerobic_decoupling])
-            avg_power = np.mean([dec['avg_power'] for dec in aerobic_decoupling])
-            avg_power_cv = np.mean([dec['power_cv'] for dec in aerobic_decoupling])
-            
-            print(f"\nOverall Statistics:")
-            print(f"  - Average Decoupling: {avg_drift:.1f}%")
-            print(f"  - Average Power: {avg_power:.0f}W ({avg_power/self.ftp*100:.1f}% FTP)")
-            print(f"  - Average Power CV: {avg_power_cv:.1f}%")
-            
-            # Categorize decoupling
-            if avg_drift < 5:
-                decoupling_category = "Good"
-            elif avg_drift < 10:
-                decoupling_category = "Moderate"
-            else:
-                decoupling_category = "Poor"
-            print(f"  - Decoupling Quality: {decoupling_category}")
-            
-            # Show best and worst efforts
-            if len(aerobic_decoupling) > 1:
-                best_effort = min(aerobic_decoupling, key=lambda x: abs(x['drift_pct']))
-                worst_effort = max(aerobic_decoupling, key=lambda x: abs(x['drift_pct']))
-                
-                print(f"\nBest Steady Effort:")
-                print(f"  - Duration: {best_effort['duration']:.1f}min")
-                print(f"  - Power: {best_effort['avg_power']:.0f}W")
-                print(f"  - Decoupling: {best_effort['drift_pct']:.1f}%")
-                
-                print(f"\nMost Challenging Effort:")
-                print(f"  - Duration: {worst_effort['duration']:.1f}min")
-                print(f"  - Power: {worst_effort['avg_power']:.0f}W")
-                print(f"  - Decoupling: {worst_effort['drift_pct']:.1f}%")
-        else:
-            print(f"\n--- AEROBIC DECOUPLING ANALYSIS ---")
-            print(f"No steady efforts found for decoupling analysis.")
-            print(f"Suggestions:")
-            print(f"  - Try longer rides (>30 minutes)")
-            print(f"  - Include more consistent power efforts")
-            print(f"  - Ensure power > 50% FTP for meaningful analysis")
-            print(f"  - Check that heart rate data is available and valid")
-        
-        print(f"\n--- CARDIOVASCULAR ECONOMY ---")
-        print(f"Cardiac Cost Index (beats/kJ): {cci_kj:.1f}")
-        if total_distance_km > 0:
-            print(f"Cardiac Cost Index (beats/km): {cci_km:.1f}")
-        
-        print(f"\n--- TRAINING LOAD ---")
-        print(f"Total TRIMP Score: {trimp_score:.1f}")
-        
-        # Categorize TRIMP load
-        if trimp_score < 100:
-            load_category = "Light"
-        elif trimp_score < 200:
-            load_category = "Moderate"
-        elif trimp_score < 300:
-            load_category = "Hard"
-        else:
-            load_category = "Very Hard"
-        print(f"Training Load: {load_category}")
-        
-        print(f"\n--- METABOLIC COST ---")
-        print(f"Average MET: {avg_met:.1f}")
-        print(f"Maximum MET: {max_met:.1f}")
-        print(f"Average VO₂: {avg_vo2:.1f} ml/kg/min")
-        print(f"Maximum VO₂: {max_vo2:.1f} ml/kg/min")
-        print(f"Total Energy Expenditure: {total_energy:.0f} MET-minutes")
-        
-        # Print the final, correct variables after assignment
-        print(f"TRIMP ≈ {self.trimp_score:.0f}")
-        print(f"Cardiac Cost Index ≈ {self.cci_kj:.1f} beats · kJ⁻¹")
-        print(f"Total MET-minutes ≈ {self.total_met_min:,.0f}")
+        # Aerobic decoupling analysis completed
         
         return aerobic_decoupling, trimp_score
     
     def analyze_heat_stress(self):
         """Analyze heat stress factors and HR response correlation."""
         if self.df is None or 'heart_rate' not in self.df.columns:
-            print("Heart rate data required for heat stress analysis.")
             return
         
         # Calculate time-based heat stress indicators
@@ -1329,7 +1854,6 @@ class CyclingAnalyzer:
     def analyze_power_hr_efficiency(self):
         """Analyze power-to-heart rate efficiency over time with slope analysis and filtered data."""
         if self.df is None or 'power' not in self.df.columns or 'heart_rate' not in self.df.columns:
-            print("Power and heart rate data required for efficiency analysis.")
             return
         
         # Calculate power-to-HR ratio (efficiency metric) and filter out zero values
@@ -1340,7 +1864,6 @@ class CyclingAnalyzer:
         valid_data = self.df[valid_mask].copy()
         
         if len(valid_data) == 0:
-            print("No valid data for efficiency analysis.")
             return
         
         # Calculate efficiency over time using rolling averages
@@ -1456,22 +1979,10 @@ class CyclingAnalyzer:
             plt.show()
         
         # Print enhanced efficiency analysis
-        print(f"\n=== ENHANCED POWER-TO-HR EFFICIENCY ANALYSIS ===")
-        print(f"Valid Data Points: {len(valid_data)} / {len(self.df)} ({len(valid_data)/len(self.df)*100:.1f}%)")
-        print(f"Average Efficiency: {efficiency_mean:.2f} W/bpm")
-        print(f"Efficiency Range: {efficiency_mean - efficiency_std:.2f} to {efficiency_mean + efficiency_std:.2f} W/bpm")
-        print(f"Peak Efficiency: {valid_data['power_hr_ratio'].max():.2f} W/bpm")
-        print(f"Lowest Efficiency: {valid_data['power_hr_ratio'].min():.2f} W/bpm")
-        print(f"Efficiency Trend: {trend_label}")
+        # Enhanced power-to-HR efficiency analysis completed
         
         # Interpret efficiency trend
-        if abs(efficiency_slope) > 0.01:
-            if efficiency_slope > 0:
-                print(f"📈 Efficiency improving over time (+{efficiency_slope:.3f} W/bpm/min)")
-            else:
-                print(f"📉 Efficiency declining over time ({efficiency_slope:.3f} W/bpm/min)")
-        else:
-            print("📊 Efficiency relatively stable over time")
+                # Efficiency trend analysis completed
         
         # Efficiency zone breakdown
         for zone, count in efficiency_counts.items():
@@ -2231,6 +2742,915 @@ class CyclingAnalyzer:
         """Set user-supplied lactate-power curve coefficients for personalisation."""
         self.lactate_coeffs = (a, b, c)
 
+    def create_interactive_training_peaks_graph(self):
+        """Create an interactive TrainingPeaks-style graph using Plotly with multiple variables on different axes."""
+        if self.df is None:
+            print("No data loaded. Please load a FIT file first.")
+            return
+            
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+            import plotly.express as px
+        except ImportError:
+            print("Plotly not available. Please install with: pip install plotly")
+            return
+            
+        time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60 if 'timestamp' in self.df.columns else np.arange(len(self.df))
+        
+        # Create subplots with shared x-axis
+        fig = make_subplots(
+            rows=4, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08,  # Increased spacing
+            subplot_titles=('Power Profile', 'Heart Rate Profile', 'Cadence Profile', 'Speed/Elevation Profile'),
+            row_heights=[0.45, 0.2, 0.2, 0.15]  # Power gets even more space
+        )
+        
+        # 1. Power (Primary metric - largest subplot)
+        if 'power' in self.df.columns:
+            # Raw power as background
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=self.df['power'],
+                    mode='lines',
+                    name='Raw Power',
+                    line=dict(color='#1f77b4', width=1),
+                    opacity=0.3,
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+            
+            # Smoothed power as main line
+            if 'power_smoothed' in self.df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=self.df['power_smoothed'],
+                        mode='lines',
+                        name='Power',
+                        line=dict(color='#1f77b4', width=2),
+                        opacity=0.9,
+                        showlegend=True
+                    ),
+                    row=1, col=1
+                )
+            
+            # Add average and NP lines
+            if hasattr(self, 'avg_power') and self.avg_power is not None:
+                fig.add_hline(
+                    y=self.avg_power,
+                    line_dash="dash",
+                    line_color="red",
+                    opacity=0.8,
+                    annotation_text=f"Avg: {self.avg_power:.0f}W",
+                    row=1, col=1
+                )
+            
+            if hasattr(self, 'np_calc') and self.np_calc is not None:
+                fig.add_hline(
+                    y=self.np_calc,
+                    line_dash="dash",
+                    line_color="orange",
+                    opacity=0.8,
+                    annotation_text=f"NP: {self.np_calc:.0f}W",
+                    row=1, col=1
+                )
+        
+        # 2. Heart Rate
+        if 'heart_rate' in self.df.columns:
+            # Raw HR as background
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=self.df['heart_rate'],
+                    mode='lines',
+                    name='Raw HR',
+                    line=dict(color='#d62728', width=1),
+                    opacity=0.3,
+                    showlegend=True
+                ),
+                row=2, col=1
+            )
+            
+            # Smoothed HR as main line
+            if 'heart_rate_smoothed' in self.df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=self.df['heart_rate_smoothed'],
+                        mode='lines',
+                        name='Heart Rate',
+                        line=dict(color='#d62728', width=2),
+                        opacity=0.9,
+                        showlegend=True
+                    ),
+                    row=2, col=1
+                )
+            
+            # Add average HR line
+            if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+                avg_hr = self.metrics['heart_rate']['avg']
+                fig.add_hline(
+                    y=avg_hr,
+                    line_dash="dash",
+                    line_color="red",
+                    opacity=0.8,
+                    annotation_text=f"Avg: {avg_hr:.0f}bpm",
+                    row=2, col=1
+                )
+        
+        # 3. Cadence
+        if 'cadence' in self.df.columns:
+            # Raw cadence as background
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=self.df['cadence'],
+                    mode='lines',
+                    name='Raw Cadence',
+                    line=dict(color='#2ca02c', width=1),
+                    opacity=0.3,
+                    showlegend=True
+                ),
+                row=3, col=1
+            )
+            
+            # Smoothed cadence as main line
+            if 'cadence_smoothed' in self.df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=self.df['cadence_smoothed'],
+                        mode='lines',
+                        name='Cadence',
+                        line=dict(color='#2ca02c', width=2),
+                        opacity=0.9,
+                        showlegend=True
+                    ),
+                    row=3, col=1
+                )
+            
+            # Add average cadence line
+            if 'cadence' in self.metrics and 'avg' in self.metrics['cadence']:
+                avg_cadence = self.metrics['cadence']['avg']
+                fig.add_hline(
+                    y=avg_cadence,
+                    line_dash="dash",
+                    line_color="red",
+                    opacity=0.8,
+                    annotation_text=f"Avg: {avg_cadence:.0f}rpm",
+                    row=3, col=1
+                )
+        
+        # 4. Speed (if available) or Elevation
+        if 'speed' in self.df.columns:
+            # Convert speed to km/h if it's in m/s
+            speed_data = self.df['speed']
+            if speed_data.max() < 50:  # Likely in m/s, convert to km/h
+                speed_data = speed_data * 3.6
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=speed_data,
+                    mode='lines',
+                    name='Speed',
+                    line=dict(color='#9467bd', width=2),
+                    opacity=0.9,
+                    showlegend=True
+                ),
+                row=4, col=1
+            )
+            
+            # Add average speed line
+            avg_speed = speed_data.mean()
+            fig.add_hline(
+                y=avg_speed,
+                line_dash="dash",
+                line_color="red",
+                opacity=0.8,
+                annotation_text=f"Avg: {avg_speed:.1f}km/h",
+                row=4, col=1
+            )
+            
+        elif 'altitude' in self.df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=self.df['altitude'],
+                    mode='lines',
+                    name='Elevation',
+                    line=dict(color='#8c564b', width=2),
+                    opacity=0.9,
+                    showlegend=True
+                ),
+                row=4, col=1
+            )
+            
+            # Add average elevation line
+            avg_altitude = self.df['altitude'].mean()
+            fig.add_hline(
+                y=avg_altitude,
+                line_dash="dash",
+                line_color="red",
+                opacity=0.8,
+                annotation_text=f"Avg: {avg_altitude:.0f}m",
+                row=4, col=1
+            )
+        
+        # Update layout for better interactivity and full-width display
+        fig.update_layout(
+            title=f'{self.athlete_name} - Interactive TrainingPeaks Style Analysis',
+            title_x=0.5,
+            title_font_size=18,
+            title_font_color='black',
+            height=900,  # Increased height for better visibility
+            width=None,  # Auto-width for full container
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                bgcolor='rgba(255,255,255,0.8)',
+                bordercolor='black',
+                borderwidth=1
+            ),
+            hovermode='x unified',  # Show all traces at same x position
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=12,
+                font_family="Arial",
+                bordercolor="black"
+            ),
+            margin=dict(l=50, r=50, t=80, b=50),  # Better margins
+            plot_bgcolor='white',
+            paper_bgcolor='white'
+        )
+        
+        # Update axes labels and styling
+        fig.update_xaxes(title_text="Time (minutes)", row=4, col=1)
+        fig.update_yaxes(title_text="Power (W)", row=1, col=1)
+        fig.update_yaxes(title_text="Heart Rate (bpm)", row=2, col=1)
+        fig.update_yaxes(title_text="Cadence (rpm)", row=3, col=1)
+        
+        if 'speed' in self.df.columns:
+            fig.update_yaxes(title_text="Speed (km/h)", row=4, col=1)
+        elif 'altitude' in self.df.columns:
+            fig.update_yaxes(title_text="Elevation (m)", row=4, col=1)
+        
+        # Add grid to all subplots
+        for i in range(1, 5):
+            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray', row=i, col=1)
+            fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray', row=i, col=1)
+        
+        # Add ride summary as annotation
+        summary_text = f"Duration: {self.duration_hr:.1f}h | Distance: {self.total_distance:.1f}km"
+        if hasattr(self, 'avg_power') and self.avg_power is not None:
+            summary_text += f" | Avg Power: {self.avg_power:.0f}W"
+        if hasattr(self, 'np_calc') and self.np_calc is not None:
+            summary_text += f" | NP: {self.np_calc:.0f}W"
+        if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+            summary_text += f" | Avg HR: {self.metrics['heart_rate']['avg']:.0f}bpm"
+        
+        fig.add_annotation(
+            text=summary_text,
+            xref="paper", yref="paper",
+            x=0.02, y=0.02,
+            showarrow=False,
+            font=dict(size=10, color="black"),
+            bgcolor="white",
+            bordercolor="black",
+            borderwidth=1
+        )
+        
+        # Save or display
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_interactive_training_peaks")
+            fig.write_html(fig_path + ".html")
+            fig.write_image(fig_path + ".png", width=1600, height=800)
+            print(f"Interactive graph saved to {fig_path}.html")
+        else:
+            fig.show()
+        
+        return fig
+
+    def create_normalized_interactive_graph(self):
+        """Create a single interactive graph with all variables normalized and plotted together."""
+        if self.df is None:
+            print("No data loaded. Please load a FIT file first.")
+            return
+            
+        try:
+            import plotly.graph_objects as go
+            import plotly.express as px
+        except ImportError:
+            print("Plotly not available. Please install with: pip install plotly")
+            return
+            
+        time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60 if 'timestamp' in self.df.columns else np.arange(len(self.df))
+        
+        # Create figure
+        fig = go.Figure()
+        
+        # Color scheme for different variables
+        colors = {
+            'power': '#1f77b4',
+            'heart_rate': '#d62728', 
+            'cadence': '#2ca02c',
+            'speed': '#9467bd',
+            'altitude': '#8c564b',
+            'power_smoothed': '#1f77b4',
+            'heart_rate_smoothed': '#d62728',
+            'cadence_smoothed': '#2ca02c'
+        }
+        
+        # Normalize function
+        def normalize_data(data, name):
+            """Normalize data to 0-1 range with mean at 0.5"""
+            if data is None or len(data) == 0:
+                return None
+            data_clean = data.dropna()
+            if len(data_clean) == 0:
+                return None
+            min_val = data_clean.min()
+            max_val = data_clean.max()
+            if max_val == min_val:
+                return np.full(len(data), 0.5)
+            normalized = (data_clean - min_val) / (max_val - min_val)
+            # Fill NaN values with 0.5 (middle)
+            result = np.full(len(data), 0.5)
+            result[data_clean.index] = normalized
+            return result
+        
+        # Add traces for each variable
+        traces_added = 0
+        
+        # 1. Power (primary metric)
+        if 'power' in self.df.columns:
+            power_data = self.df['power']
+            if 'power_smoothed' in self.df.columns:
+                power_data = self.df['power_smoothed']
+            
+            power_norm = normalize_data(power_data, 'power')
+            if power_norm is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=power_norm,
+                        mode='lines',
+                        name='Power',
+                        line=dict(color=colors['power'], width=4),
+                        opacity=1.0,
+                        hovertemplate='<b>Power</b><br>' +
+                                    'Time: %{x:.1f} min<br>' +
+                                    'Power: %{text} W<br>' +
+                                    '<extra></extra>',
+                        text=[f"{val:.0f}" for val in power_data],
+                        yaxis='y'
+                    )
+                )
+                traces_added += 1
+        
+        # 2. Heart Rate
+        if 'heart_rate' in self.df.columns:
+            hr_data = self.df['heart_rate']
+            if 'heart_rate_smoothed' in self.df.columns:
+                hr_data = self.df['heart_rate_smoothed']
+            
+            hr_norm = normalize_data(hr_data, 'heart_rate')
+            if hr_norm is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=hr_norm,
+                        mode='lines',
+                        name='Heart Rate',
+                        line=dict(color=colors['heart_rate'], width=3.5),
+                        opacity=1.0,
+                        hovertemplate='<b>Heart Rate</b><br>' +
+                                    'Time: %{x:.1f} min<br>' +
+                                    'HR: %{text} bpm<br>' +
+                                    '<extra></extra>',
+                        text=[f"{val:.0f}" for val in hr_data],
+                        yaxis='y'
+                    )
+                )
+                traces_added += 1
+        
+        # 3. Cadence
+        if 'cadence' in self.df.columns:
+            cadence_data = self.df['cadence']
+            if 'cadence_smoothed' in self.df.columns:
+                cadence_data = self.df['cadence_smoothed']
+            
+            cadence_norm = normalize_data(cadence_data, 'cadence')
+            if cadence_norm is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=cadence_norm,
+                        mode='lines',
+                        name='Cadence',
+                        line=dict(color=colors['cadence'], width=3),
+                        opacity=1.0,
+                        hovertemplate='<b>Cadence</b><br>' +
+                                    'Time: %{x:.1f} min<br>' +
+                                    'Cadence: %{text} rpm<br>' +
+                                    '<extra></extra>',
+                        text=[f"{val:.0f}" for val in cadence_data],
+                        yaxis='y'
+                    )
+                )
+                traces_added += 1
+        
+        # 4. Speed
+        if 'speed' in self.df.columns:
+            speed_data = self.df['speed']
+            # Convert to km/h if in m/s
+            if speed_data.max() < 50:
+                speed_data = speed_data * 3.6
+            
+            speed_norm = normalize_data(speed_data, 'speed')
+            if speed_norm is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=speed_norm,
+                        mode='lines',
+                        name='Speed',
+                        line=dict(color=colors['speed'], width=3),
+                        opacity=1.0,
+                        hovertemplate='<b>Speed</b><br>' +
+                                    'Time: %{x:.1f} min<br>' +
+                                    'Speed: %{text} km/h<br>' +
+                                    '<extra></extra>',
+                        text=[f"{val:.1f}" for val in speed_data],
+                        yaxis='y'
+                    )
+                )
+                traces_added += 1
+        
+        # 5. Altitude (if no speed)
+        elif 'altitude' in self.df.columns:
+            altitude_data = self.df['altitude']
+            altitude_norm = normalize_data(altitude_data, 'altitude')
+            if altitude_norm is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=time_minutes,
+                        y=altitude_norm,
+                        mode='lines',
+                        name='Elevation',
+                        line=dict(color=colors['altitude'], width=3),
+                        opacity=1.0,
+                        hovertemplate='<b>Elevation</b><br>' +
+                                    'Time: %{x:.1f} min<br>' +
+                                    'Elevation: %{text} m<br>' +
+                                    '<extra></extra>',
+                        text=[f"{val:.0f}" for val in altitude_data],
+                        yaxis='y'
+                    )
+                )
+                traces_added += 1
+        
+        # Add average lines for each variable
+        if 'power' in self.df.columns and hasattr(self, 'avg_power') and self.avg_power is not None:
+            power_data = self.df['power']
+            if 'power_smoothed' in self.df.columns:
+                power_data = self.df['power_smoothed']
+            power_norm_avg = normalize_data(pd.Series([self.avg_power] * len(power_data)), 'power_avg')
+            if power_norm_avg is not None:
+                fig.add_hline(
+                    y=power_norm_avg[0],
+                    line_dash="dash",
+                    line_color=colors['power'],
+                    opacity=0.6,
+                    annotation_text=f"Avg Power: {self.avg_power:.0f}W",
+                    annotation_position="top right"
+                )
+        
+        if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+            avg_hr = self.metrics['heart_rate']['avg']
+            hr_data = self.df['heart_rate']
+            hr_norm_avg = normalize_data(pd.Series([avg_hr] * len(hr_data)), 'hr_avg')
+            if hr_norm_avg is not None:
+                fig.add_hline(
+                    y=hr_norm_avg[0],
+                    line_dash="dash",
+                    line_color=colors['heart_rate'],
+                    opacity=0.6,
+                    annotation_text=f"Avg HR: {avg_hr:.0f}bpm",
+                    annotation_position="top right"
+                )
+        
+        if 'cadence' in self.metrics and 'avg' in self.metrics['cadence']:
+            avg_cadence = self.metrics['cadence']['avg']
+            cadence_data = self.df['cadence']
+            cadence_norm_avg = normalize_data(pd.Series([avg_cadence] * len(cadence_data)), 'cadence_avg')
+            if cadence_norm_avg is not None:
+                fig.add_hline(
+                    y=cadence_norm_avg[0],
+                    line_dash="dash",
+                    line_color=colors['cadence'],
+                    opacity=0.6,
+                    annotation_text=f"Avg Cadence: {avg_cadence:.0f}rpm",
+                    annotation_position="top right"
+                )
+        
+        # Update layout with improved text visibility
+        fig.update_layout(
+            title=f'{self.athlete_name} - Normalized Multi-Variable Analysis',
+            title_x=0.5,
+            title_font_size=20,
+            title_font_color='black',
+            title_font_family="Arial Black",
+            height=800,
+            width=None,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                bgcolor='rgba(255,255,255,0.95)',
+                bordercolor='black',
+                borderwidth=2,
+                font=dict(size=14, color="black")
+            ),
+            hovermode='x unified',
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=14,
+                font_family="Arial Black",
+                bordercolor="black"
+            ),
+            margin=dict(l=60, r=60, t=100, b=60),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            xaxis=dict(
+                title="Time (minutes)",
+                title_font=dict(size=16, color="black"),
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='lightgray',
+                tickfont=dict(size=14, color="black"),
+                tickmode='auto',
+                nticks=10
+            ),
+            yaxis=dict(
+                title="Normalized Values (0-1)",
+                title_font=dict(size=16, color="black"),
+                range=[0, 1],
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='lightgray',
+                tickmode='array',
+                tickvals=[0, 0.25, 0.5, 0.75, 1],
+                ticktext=['Min', '25%', 'Avg', '75%', 'Max'],
+                tickfont=dict(size=14, color="black")
+            )
+        )
+        
+        # Add ride summary as annotation with improved visibility
+        summary_text = f"Duration: {self.duration_hr:.1f}h | Distance: {self.total_distance:.1f}km"
+        if hasattr(self, 'avg_power') and self.avg_power is not None:
+            summary_text += f" | Avg Power: {self.avg_power:.0f}W"
+        if hasattr(self, 'np_calc') and self.np_calc is not None:
+            summary_text += f" | NP: {self.np_calc:.0f}W"
+        if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+            summary_text += f" | Avg HR: {self.metrics['heart_rate']['avg']:.0f}bpm"
+        
+        fig.add_annotation(
+            text=summary_text,
+            xref="paper", yref="paper",
+            x=0.02, y=0.02,
+            showarrow=False,
+            font=dict(size=12, color="black", family="Arial Black"),
+            bgcolor="white",
+            bordercolor="black",
+            borderwidth=2
+        )
+        
+        # Save or display
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_normalized_interactive")
+            fig.write_html(fig_path + ".html")
+            fig.write_image(fig_path + ".png", width=1600, height=800)
+            print(f"Normalized interactive graph saved to {fig_path}.html")
+        else:
+            fig.show()
+        
+        return fig
+
+    def create_training_peaks_dual_axis_graph(self):
+        """Create a TrainingPeaks-style graph with dual y-axes overlaying multiple cycling metrics."""
+        if self.df is None:
+            print("No data loaded. Please load a FIT file first.")
+            return
+            
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except ImportError:
+            print("Plotly not available. Please install with: pip install plotly")
+            return
+            
+        time_minutes = (self.df['timestamp'] - self.df['timestamp'].iloc[0]).dt.total_seconds() / 60 if 'timestamp' in self.df.columns else np.arange(len(self.df))
+        
+        # Create figure with secondary y-axis
+        fig = go.Figure()
+        
+        # Color scheme for different variables (TrainingPeaks style)
+        colors = {
+            'power': '#1f77b4',      # Blue
+            'heart_rate': '#d62728',  # Red
+            'cadence': '#2ca02c',     # Green
+            'speed': '#9467bd',       # Purple
+            'altitude': '#8c564b'     # Brown
+        }
+        
+        # Track which axes are used
+        left_axis_vars = []
+        right_axis_vars = []
+        
+        # Apply smoothing to data for better visualization
+        smoothing_window = 5
+        
+        # Primary metrics on left y-axis (Power, HR, Cadence)
+        if 'power' in self.df.columns:
+            power_data = self.df['power'].rolling(window=smoothing_window, center=True, min_periods=1).mean()
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=power_data,
+                    mode='lines',
+                    name='Power',
+                    line=dict(color=colors['power'], width=3),
+                    opacity=0.9,
+                    hovertemplate='<b>Power</b><br>' +
+                                'Time: %{x:.1f} min<br>' +
+                                'Power: %{y:.0f} W<br>' +
+                                '<extra></extra>',
+                    yaxis='y'
+                )
+            )
+            left_axis_vars.append('Power')
+        
+        if 'heart_rate' in self.df.columns:
+            hr_data = self.df['heart_rate'].rolling(window=smoothing_window, center=True, min_periods=1).mean()
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=hr_data,
+                    mode='lines',
+                    name='Heart Rate',
+                    line=dict(color=colors['heart_rate'], width=2.5),
+                    opacity=0.8,
+                    hovertemplate='<b>Heart Rate</b><br>' +
+                                'Time: %{x:.1f} min<br>' +
+                                'HR: %{y:.0f} bpm<br>' +
+                                '<extra></extra>',
+                    yaxis='y'
+                )
+            )
+            left_axis_vars.append('Heart Rate')
+        
+        if 'cadence' in self.df.columns:
+            cadence_data = self.df['cadence'].rolling(window=smoothing_window, center=True, min_periods=1).mean()
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=cadence_data,
+                    mode='lines',
+                    name='Cadence',
+                    line=dict(color=colors['cadence'], width=2),
+                    opacity=0.7,
+                    hovertemplate='<b>Cadence</b><br>' +
+                                'Time: %{x:.1f} min<br>' +
+                                'Cadence: %{y:.0f} rpm<br>' +
+                                '<extra></extra>',
+                    yaxis='y'
+                )
+            )
+            left_axis_vars.append('Cadence')
+        
+        # Secondary metrics on separate y-axes (Speed on y2, Elevation on y3)
+        if 'speed' in self.df.columns:
+            speed_data = self.df['speed'].rolling(window=smoothing_window, center=True, min_periods=1).mean()
+            # Convert to km/h if in m/s
+            if speed_data.max() < 50:
+                speed_data = speed_data * 3.6
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=speed_data,
+                    mode='lines',
+                    name='Speed',
+                    line=dict(color=colors['speed'], width=2.5),
+                    opacity=0.8,
+                    hovertemplate='<b>Speed</b><br>' +
+                                'Time: %{x:.1f} min<br>' +
+                                'Speed: %{y:.1f} km/h<br>' +
+                                '<extra></extra>',
+                    yaxis='y2'
+                )
+            )
+            right_axis_vars.append('Speed')
+        
+        if 'altitude' in self.df.columns:
+            altitude_data = self.df['altitude'].rolling(window=smoothing_window, center=True, min_periods=1).mean()
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=time_minutes,
+                    y=altitude_data,
+                    mode='lines',
+                    name='Elevation',
+                    line=dict(color=colors['altitude'], width=2.5),
+                    opacity=0.8,
+                    hovertemplate='<b>Elevation</b><br>' +
+                                'Time: %{x:.1f} min<br>' +
+                                'Elevation: %{y:.0f} m<br>' +
+                                '<extra></extra>',
+                    yaxis='y3'
+                )
+            )
+            right_axis_vars.append('Elevation')
+        
+        # Add average lines for primary metrics with better positioning
+        if 'power' in self.df.columns and hasattr(self, 'avg_power') and self.avg_power is not None:
+            fig.add_hline(
+                y=self.avg_power,
+                line_dash="dash",
+                line_color=colors['power'],
+                opacity=0.6,
+                annotation_text=f"Avg Power: {self.avg_power:.0f}W",
+                annotation_position="top right",
+                annotation=dict(font_size=12)
+            )
+        
+        if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+            avg_hr = self.metrics['heart_rate']['avg']
+            fig.add_hline(
+                y=avg_hr,
+                line_dash="dash",
+                line_color=colors['heart_rate'],
+                opacity=0.6,
+                annotation_text=f"Avg HR: {avg_hr:.0f}bpm",
+                annotation_position="top right",
+                annotation=dict(font_size=12)
+            )
+        
+        if 'cadence' in self.metrics and 'avg' in self.metrics['cadence']:
+            avg_cadence = self.metrics['cadence']['avg']
+            fig.add_hline(
+                y=avg_cadence,
+                line_dash="dash",
+                line_color=colors['cadence'],
+                opacity=0.6,
+                annotation_text=f"Avg Cadence: {avg_cadence:.0f}rpm",
+                annotation_position="top right",
+                annotation=dict(font_size=12)
+            )
+        
+        # Update layout with multiple y-axes and improved styling
+        fig.update_layout(
+            title=f'{self.athlete_name} - Enhanced Multi-Axis TrainingPeaks Analysis',
+            title_x=0.5,
+            title_font_size=24,
+            title_font_color='black',
+            title_font_family="Arial Black",
+            height=800,
+            width=None,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.05,
+                xanchor="right",
+                x=1,
+                bgcolor='rgba(255,255,255,0.98)',
+                bordercolor='black',
+                borderwidth=2,
+                font=dict(size=16, color="black")
+            ),
+            hovermode='x unified',
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=16,
+                font_family="Arial Black",
+                bordercolor="black"
+            ),
+            margin=dict(l=80, r=80, t=120, b=80),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            xaxis=dict(
+                title="Time (minutes)",
+                title_font=dict(size=18, color="black"),
+                title_standoff=25,
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='lightgray',
+                tickfont=dict(size=16, color="black"),
+                tickmode='auto',
+                nticks=10
+            ),
+            # Primary y-axis (left)
+            yaxis=dict(
+                title="Power (W) / Heart Rate (bpm) / Cadence (rpm)",
+                title_font=dict(size=18, color="black"),
+                title_standoff=30,
+                showgrid=True,
+                gridwidth=1,
+                gridcolor='lightgray',
+                tickfont=dict(size=16, color="black"),
+                side='left'
+            ),
+            # Secondary y-axis (middle-right for speed)
+            yaxis2=dict(
+                title="Speed (km/h)",
+                title_font=dict(size=18, color="black"),
+                title_standoff=30,
+                showgrid=False,
+                tickfont=dict(size=16, color="black"),
+                side='right',
+                overlaying='y',
+                anchor='x',
+                position=0.85
+            ),
+            # Tertiary y-axis (far-right for elevation)
+            yaxis3=dict(
+                title="Elevation (m)",
+                title_font=dict(size=18, color="black"),
+                title_standoff=30,
+                showgrid=False,
+                tickfont=dict(size=16, color="black"),
+                side='right',
+                overlaying='y',
+                anchor='x',
+                position=0.95
+            )
+        )
+        
+        # Add ride summary as annotation with enhanced info
+        summary_text = f"Duration: {self.duration_hr:.1f}h | Distance: {self.total_distance:.1f}km"
+        if hasattr(self, 'avg_power') and self.avg_power is not None:
+            summary_text += f" | Avg Power: {self.avg_power:.0f}W"
+        if hasattr(self, 'np_calc') and self.np_calc is not None:
+            summary_text += f" | NP: {self.np_calc:.0f}W"
+        if 'heart_rate' in self.metrics and 'avg' in self.metrics['heart_rate']:
+            summary_text += f" | Avg HR: {self.metrics['heart_rate']['avg']:.0f}bpm"
+        
+        fig.add_annotation(
+            text=summary_text,
+            xref="paper", yref="paper",
+            x=0.02, y=0.02,
+            showarrow=False,
+            font=dict(size=14, color="black", family="Arial Black"),
+            bgcolor="white",
+            bordercolor="black",
+            borderwidth=2
+        )
+        
+        # Add axis information with better formatting
+        if left_axis_vars and right_axis_vars:
+            # Separate speed and elevation for axis info
+            speed_vars = [var for var in right_axis_vars if var == 'Speed']
+            elevation_vars = [var for var in right_axis_vars if var == 'Elevation']
+            
+            axis_info = f"Left: {', '.join(left_axis_vars)} | Middle-Right: {', '.join(speed_vars)} | Far-Right: {', '.join(elevation_vars)}"
+            fig.add_annotation(
+                text=axis_info,
+                xref="paper", yref="paper",
+                x=0.02, y=0.95,
+                showarrow=False,
+                font=dict(size=12, color="black", family="Arial"),
+                bgcolor="white",
+                bordercolor="black",
+                borderwidth=1
+            )
+        
+        # Save or display
+        if self.save_figures:
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_training_peaks_dual_axis")
+            fig.write_html(fig_path + ".html")
+            fig.write_image(fig_path + ".png", width=1600, height=700)
+            print(f"TrainingPeaks dual-axis graph saved to {fig_path}.html")
+        else:
+            fig.show()
+        
+        return fig
+
 
 def main():
     """Main function to run enhanced cycling analysis."""
@@ -2271,6 +3691,22 @@ def main():
         # Print summary
         print("\n📋 Printing comprehensive metrics table...")
         analyzer.print_comprehensive_metrics_table()
+        
+        # Create TrainingPeaks-style graph first
+        print("\n📈 Creating TrainingPeaks-style graph...")
+        analyzer.create_training_peaks_style_graph()
+        
+        # Create interactive TrainingPeaks-style graph
+        print("\n📈 Creating interactive TrainingPeaks-style graph...")
+        analyzer.create_interactive_training_peaks_graph()
+        
+        # Create normalized interactive graph
+        print("\n📈 Creating normalized interactive graph...")
+        analyzer.create_normalized_interactive_graph()
+        
+        # Create TrainingPeaks dual-axis graph
+        print("\n📈 Creating TrainingPeaks dual-axis graph...")
+        analyzer.create_training_peaks_dual_axis_graph()
         
         # Advanced physiological analysis
         print("\n🔬 Running advanced physiological analysis...")

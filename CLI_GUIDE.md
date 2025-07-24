@@ -112,7 +112,7 @@ python cli.py --file cache/Into_the_clouds.fit --ftp 320 --output-dir test_ftp_3
 - **Torque Analysis**: `{analysis_id}_torque.png/svg`
 - **W' Balance**: `{analysis_id}_w_prime_balance.png/svg`
 - **Lactate Estimation**: `{analysis_id}_lactate.png/svg`
-- **TrainingPeaks Dual-Axis**: `{analysis_id}_training_peaks_dual_axis.html/png`
+- **Multi-Axis Analysis**: `{analysis_id}_multi_axis_analysis.html/png`
 
 ### **Analysis Pipeline**
 1. **📥 Data Ingestion** - Load and validate FIT file

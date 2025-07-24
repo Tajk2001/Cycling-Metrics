@@ -848,7 +848,7 @@ class CyclingAnalyzer:
             self.analyze_variable_relationships()
             self.analyze_torque()
             # Create dual axis analysis
-            self.create_training_peaks_dual_axis_graph()
+            self.create_professional_dual_axis_graph()
             # Calculate W' balance with proper error handling
             try:
                 cp_est, w_prime_est = self.estimate_critical_power()
@@ -978,8 +978,8 @@ class CyclingAnalyzer:
         
         # Performance metrics calculated
     
-    def create_training_peaks_style_graph(self):
-        """Create a TrainingPeaks-style graph with multiple variables on different axes."""
+    def create_professional_multi_axis_graph(self):
+        """Create a professional multi-axis graph with multiple variables on different axes."""
         if self.df is None:
             return
             
@@ -990,7 +990,7 @@ class CyclingAnalyzer:
                                 gridspec_kw={'height_ratios': [2, 1, 1, 1], 'hspace': 0.1})
         
         # Set main title
-        fig.suptitle(f'{self.athlete_name} - TrainingPeaks Style Analysis', 
+        fig.suptitle(f'{self.athlete_name} - Professional Multi-Axis Analysis', 
                     fontsize=16, fontweight='bold', y=0.98)
         
         # 1. Power (Primary metric - largest subplot)
@@ -2742,8 +2742,8 @@ class CyclingAnalyzer:
         """Set user-supplied lactate-power curve coefficients for personalisation."""
         self.lactate_coeffs = (a, b, c)
 
-    def create_interactive_training_peaks_graph(self):
-        """Create an interactive TrainingPeaks-style graph using Plotly with multiple variables on different axes."""
+    def create_interactive_professional_graph(self):
+        """Create an interactive professional multi-axis graph using Plotly with multiple variables on different axes."""
         if self.df is None:
             print("No data loaded. Please load a FIT file first.")
             return
@@ -2963,7 +2963,7 @@ class CyclingAnalyzer:
         
         # Update layout for better interactivity and full-width display
         fig.update_layout(
-            title=f'{self.athlete_name} - Interactive TrainingPeaks Style Analysis',
+            title=f'{self.athlete_name} - Interactive Professional Multi-Axis Analysis',
             title_x=0.5,
             title_font_size=18,
             title_font_color='black',
@@ -3348,8 +3348,8 @@ class CyclingAnalyzer:
         
         return fig
 
-    def create_training_peaks_dual_axis_graph(self):
-        """Create a TrainingPeaks-style graph with dual y-axes overlaying multiple cycling metrics."""
+    def create_professional_dual_axis_graph(self):
+        """Create a professional multi-axis graph with dual y-axes overlaying multiple cycling metrics."""
         if self.df is None:
             print("No data loaded. Please load a FIT file first.")
             return
@@ -3366,7 +3366,7 @@ class CyclingAnalyzer:
         # Create figure with secondary y-axis
         fig = go.Figure()
         
-        # Color scheme for different variables (TrainingPeaks style)
+        # Color scheme for different variables (Professional style)
         colors = {
             'power': '#1f77b4',      # Blue
             'heart_rate': '#d62728',  # Red
@@ -3525,7 +3525,7 @@ class CyclingAnalyzer:
         
         # Update layout with multiple y-axes and improved styling
         fig.update_layout(
-            title=f'{self.athlete_name} - Enhanced Multi-Axis TrainingPeaks Analysis',
+            title=f'{self.athlete_name} - Enhanced Multi-Axis Professional Analysis',
             title_x=0.5,
             title_font_size=24,
             title_font_color='black',
@@ -3642,10 +3642,10 @@ class CyclingAnalyzer:
         
         # Save or display
         if self.save_figures:
-            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_training_peaks_dual_axis")
+            fig_path = os.path.join(self.save_dir, f"{self.analysis_id}_multi_axis_analysis")
             fig.write_html(fig_path + ".html")
             fig.write_image(fig_path + ".png", width=1600, height=700)
-            print(f"TrainingPeaks dual-axis graph saved to {fig_path}.html")
+            print(f"Professional multi-axis graph saved to {fig_path}.html")
         else:
             fig.show()
         
@@ -3692,21 +3692,21 @@ def main():
         print("\n📋 Printing comprehensive metrics table...")
         analyzer.print_comprehensive_metrics_table()
         
-        # Create TrainingPeaks-style graph first
-        print("\n📈 Creating TrainingPeaks-style graph...")
-        analyzer.create_training_peaks_style_graph()
+        # Create professional multi-axis graph first
+        print("\n📈 Creating professional multi-axis graph...")
+        analyzer.create_professional_multi_axis_graph()
         
-        # Create interactive TrainingPeaks-style graph
-        print("\n📈 Creating interactive TrainingPeaks-style graph...")
-        analyzer.create_interactive_training_peaks_graph()
+        # Create interactive professional multi-axis graph
+        print("\n📈 Creating interactive professional multi-axis graph...")
+        analyzer.create_interactive_professional_graph()
         
         # Create normalized interactive graph
         print("\n📈 Creating normalized interactive graph...")
         analyzer.create_normalized_interactive_graph()
         
-        # Create TrainingPeaks dual-axis graph
-        print("\n📈 Creating TrainingPeaks dual-axis graph...")
-        analyzer.create_training_peaks_dual_axis_graph()
+        # Create professional dual-axis graph
+        print("\n📈 Creating professional dual-axis graph...")
+        analyzer.create_professional_dual_axis_graph()
         
         # Advanced physiological analysis
         print("\n🔬 Running advanced physiological analysis...")

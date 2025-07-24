@@ -1072,10 +1072,10 @@ def show_analysis_tab():
                 else:
                     st.success("✅ Analysis already completed")
                     
-                    # TrainingPeaks Dual-Axis Graph - Full Width at Top
+                    # Multi-Axis Analysis Graph - Full Width at Top
                     st.markdown("---")
-                    st.subheader("📈 TrainingPeaks Dual-Axis Analysis")
-                    st.markdown("*Multiple metrics with dual y-axes - Professional TrainingPeaks style*")
+                    st.subheader("📈 Multi-Axis Analysis")
+                    st.markdown("*Multiple metrics with dual y-axes - Professional analysis style*")
                     st.markdown("")
                     
                     # Variable visibility controls
@@ -1105,7 +1105,7 @@ def show_analysis_tab():
                     try:
                         # Look for dual axis files with the analysis ID pattern
                         import glob
-                        dual_axis_files = glob.glob(f"figures/*_training_peaks_dual_axis.png")
+                        dual_axis_files = glob.glob(f"figures/*_multi_axis_analysis.png")
                         if dual_axis_files:
                             # Use the most recent dual axis file
                             dual_axis_path = sorted(dual_axis_files)[-1]

@@ -93,7 +93,7 @@ done
 - Efficiency metrics
 
 ### **Advanced Visualizations**
-- TrainingPeaks-style dual-axis charts
+- Professional dual-axis charts
 - Fatigue pattern analysis
 - Power/HR efficiency plots
 - Variable relationship analysis
@@ -126,7 +126,7 @@ Each analysis generates:
 - **Torque Analysis**: Force and cadence relationships
 - **W' Balance**: Anaerobic work capacity tracking
 - **Lactate Estimation**: Metabolic stress indicators
-- **TrainingPeaks Dual-Axis**: Professional-style charts
+- **Multi-Axis Analysis**: Professional dual-axis charts
 
 ## ⚙️ Configuration
 

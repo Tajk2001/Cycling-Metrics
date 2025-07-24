@@ -212,6 +212,4 @@ This project is open source and available under the [MIT License](LICENSE).
 
 ---
 
-**🚀 Ready to analyze your cycling performance!**
-
-*This project has been cleaned of all personal information and is ready for public sharing.* 
+**🚀 Ready to analyze your cycling performance!** 

@@ -1,9 +1,0 @@
-{
-  "athlete_name": "Cyclist",
-  "weight_kg": 70,
-  "height_cm": 175,
-  "max_hr": 195,
-  "rest_hr": 51,
-  "ftp": 250,
-  "lthr": 160
-}

@@ -35,22 +35,15 @@ except Exception:
 pd.options.mode.copy_on_write = True
 
 # User Parameters
-file_path = "/Users/tajkrieger/Desktop/TestFiles/Test2"
+file_path = "/Users/tajkrieger/Desktop/Training/Training5"
 FTP = 290
 LTHR = 181
-rider_mass_kg = 52.5
+rider_mass_kg = 52
 crank_length_mm = 165
 speed_threshold = 0.5
 
 # ML-Based Interval Detection Parameters
-max_intervals_to_analyze = 10   # Maximum number of intervals to analyze in detail
-
-# Interval Detection Parameters
-min_duration = 30               # Minimum interval duration in seconds
-power_threshold_pct = 0.75      # Power threshold as percentage of FTP (75%)
-cv_threshold = 0.15             # Coefficient of variation threshold for power consistency
-overlap_threshold = 30          # Overlap threshold in seconds
-set_time_window = 300           # Time window for identifying interval sets (5 minutes)
+max_intervals_to_analyze = 15   # Maximum number of intervals to analyze in detail
 
 
 def load_fit_to_dataframe(path):
@@ -209,8 +202,8 @@ def plot_torque_vs_rpm(df):
         height=520
     )
     # Save to HTML file instead of showing
-    fig.write_html("torque_vs_rpm.html")
-    print("Plot saved to torque_vs_rpm.html")
+    # fig.write_html("torque_vs_rpm.html")  # Removed file generation
+    # print("Plot saved to torque_vs_rpm.html")  # Plots shown in dashboard instead
 
 
 def best_10s_windows(df, *, n_best=3, win=10, min_gap=30, min_cad=40, max_cad=140):
@@ -263,7 +256,7 @@ def best_10s_windows(df, *, n_best=3, win=10, min_gap=30, min_cad=40, max_cad=14
 
 
 def sprint_micro_metrics(df, start_ts, win=10):
-    """Extract detailed micro-metrics for a sprint window."""
+    """Extract detailed micro-metrics for a sprint window with enhanced timing analysis."""
     seg = df.loc[start_ts : start_ts + pd.Timedelta(seconds=win-1)].copy()
     if seg.empty: 
         return None
@@ -271,30 +264,218 @@ def sprint_micro_metrics(df, start_ts, win=10):
     t = (seg.index - seg.index[0]).total_seconds()
     out = {}
     
+    # Get the time interval between data points (assuming regular sampling)
+    if len(seg) > 1:
+        time_interval = (seg.index[1] - seg.index[0]).total_seconds()
+    else:
+        time_interval = 1.0  # Default to 1 second if only one data point
+    
+    # Enhanced timing analysis for each metric
     for k in ['power', 'torque', 'cadence']:
         if k not in seg.columns: 
             continue
         
         kmax_idx = seg[k].idxmax()
+        kmax_time = (kmax_idx - seg.index[0]).total_seconds()
+        
         out[f'{k}_max'] = seg[k].max()
         out[f'{k}_avg'] = seg[k].mean()
-        out[f'{k}_ttp_s'] = (kmax_idx - seg.index[0]).total_seconds()
+        out[f'{k}_ttp_s'] = kmax_time  # Time to peak
         out[f'{k}_fade_%'] = 100 * (seg[k].iloc[-2:].mean() - seg[k].max()) / seg[k].max()
+        
+        # Additional timing metrics
+        out[f'{k}_peak_position_%'] = (kmax_time / win) * 100  # Where in the sprint the peak occurs
+        out[f'{k}_rise_time_s'] = kmax_time  # Time to reach peak (same as TTP for now)
+        
+        # Calculate time to 90% of peak (acceleration phase)
+        peak_value = seg[k].max()
+        threshold_90 = peak_value * 0.9
+        above_90 = seg[k] >= threshold_90
+        if above_90.any():
+            first_above_90_idx = above_90.idxmax()
+            out[f'{k}_time_to_90%_s'] = (first_above_90_idx - seg.index[0]).total_seconds()
+        else:
+            out[f'{k}_time_to_90%_s'] = np.nan
+        
+        # Calculate acceleration rate (how quickly metric rises)
+        if kmax_time > 0:
+            out[f'{k}_acceleration_rate'] = peak_value / kmax_time  # units per second
+        else:
+            out[f'{k}_acceleration_rate'] = np.nan
+        
+        # Calculate time above 80% of peak (sustained effort)
+        threshold_80 = peak_value * 0.8
+        above_80 = seg[k] >= threshold_80
+        if above_80.any():
+            time_above_80 = above_80.sum() * time_interval
+            out[f'{k}_time_above_80%_s'] = time_above_80
+        else:
+            out[f'{k}_time_above_80%_s'] = 0
     
+    # Cross-metric timing analysis
+    if all(k in seg.columns for k in ['power', 'torque', 'cadence']):
+        # Time differences between peaks
+        power_peak_time = out['power_ttp_s']
+        torque_peak_time = out['torque_ttp_s']
+        cadence_peak_time = out['cadence_ttp_s']
+        
+        out['torque_peak_delay_vs_power_s'] = torque_peak_time - power_peak_time
+        out['cadence_peak_delay_vs_power_s'] = cadence_peak_time - power_peak_time
+        out['cadence_peak_delay_vs_torque_s'] = cadence_peak_time - torque_peak_time
+        
+        # Peak sequence analysis
+        peak_times = [('power', power_peak_time), ('torque', torque_peak_time), ('cadence', cadence_peak_time)]
+        peak_times.sort(key=lambda x: x[1])
+        out['peak_sequence'] = ' → '.join([p[0] for p in peak_times])
+        
+        # Synchronization score (how close peaks are together)
+        time_spread = max(peak_times, key=lambda x: x[1])[1] - min(peak_times, key=lambda x: x[1])[1]
+        out['peak_synchronization_s'] = time_spread
+    
+    # Enhanced work and efficiency metrics
     out['work_kJ'] = seg['power'].sum() / 1000
     out['impulse_Nm'] = seg['torque'].sum()
     out['rev_est'] = seg['cadence'].mean() / 60 * win
     out['start'] = start_ts.strftime('%H:%M:%S')
     
-    # Calculate mechanical efficiency proxy if speed data available
+    # Power curve analysis
+    if 'power' in seg.columns:
+        power_curve = seg['power'].values
+        # Time to reach 50%, 75%, 90% of max power
+        for threshold in [0.5, 0.75, 0.9]:
+            threshold_value = seg['power'].max() * threshold
+            above_threshold = seg['power'] >= threshold_value
+            if above_threshold.any():
+                first_above_idx = above_threshold.idxmax()
+                out[f'power_time_to_{int(threshold*100)}%_s'] = (first_above_idx - seg.index[0]).total_seconds()
+            else:
+                out[f'power_time_to_{int(threshold*100)}%_s'] = np.nan
+    
+    # Torque curve analysis
+    if 'torque' in seg.columns:
+        torque_curve = seg['torque'].values
+        # Time to reach 50%, 75%, 90% of max torque
+        for threshold in [0.5, 0.75, 0.9]:
+            threshold_value = seg['torque'].max() * threshold
+            above_threshold = seg['torque'] >= threshold_value
+            if above_threshold.any():
+                first_above_idx = above_threshold.idxmax()
+                out[f'torque_time_to_{int(threshold*100)}%_s'] = (first_above_idx - seg.index[0]).total_seconds()
+            else:
+                out[f'torque_time_to_{int(threshold*100)}%_s'] = np.nan
+    
+    # Cadence curve analysis
+    if 'cadence' in seg.columns:
+        cadence_curve = seg['cadence'].values
+        # Time to reach 50%, 75%, 90% of max cadence
+        for threshold in [0.5, 0.75, 0.9]:
+            threshold_value = seg['cadence'].max() * threshold
+            above_threshold = seg['cadence'] >= threshold_value
+            if above_threshold.any():
+                first_above_idx = above_threshold.idxmax()
+                out[f'cadence_time_to_{int(threshold*100)}%_s'] = (first_above_idx - seg.index[0]).total_seconds()
+            else:
+                out[f'cadence_time_to_{int(threshold*100)}%_s'] = np.nan
+    
+    # Speed analysis for sprints
     if 'enhanced_speed' in seg.columns:
+        # Convert speed from m/s to km/h for easier interpretation
+        speed_kph = seg['enhanced_speed'] * 3.6
+        
+        # Speed increase during sprint
+        start_speed = speed_kph.iloc[0]
+        end_speed = speed_kph.iloc[-1]
+        speed_increase = end_speed - start_speed
+        out['speed_increase_kph'] = speed_increase
+        
+        # Peak speed and timing
+        max_speed = speed_kph.max()
+        max_speed_idx = speed_kph.idxmax()
+        time_to_max_speed = (max_speed_idx - seg.index[0]).total_seconds()
+        out['max_speed_kph'] = max_speed
+        out['speed_ttp_s'] = time_to_max_speed
+        
+        # Speed acceleration rate (km/h per second)
+        if time_to_max_speed > 0:
+            out['speed_acceleration_rate'] = max_speed / time_to_max_speed
+        else:
+            out['speed_acceleration_rate'] = np.nan
+        
+        # Speed consistency (coefficient of variation)
+        speed_std = speed_kph.std()
+        speed_cv = (speed_std / speed_kph.mean()) * 100 if speed_kph.mean() > 0 else np.nan
+        out['speed_consistency_cv'] = speed_cv
+        
+        # Time above 90% of max speed (sustained high speed)
+        threshold_90 = max_speed * 0.9
+        above_90 = speed_kph >= threshold_90
+        if above_90.any():
+            time_above_90 = above_90.sum() * time_interval
+            out['speed_time_above_90%_s'] = time_above_90
+        else:
+            out['speed_time_above_90%_s'] = 0
+        
+        # Speed vs Power timing relationship
+        if 'power' in seg.columns:
+            power_peak_time = out.get('power_ttp_s', 0)
+            speed_power_timing_diff = time_to_max_speed - power_peak_time
+            out['speed_power_timing_diff_s'] = speed_power_timing_diff
+            
+            # Classify sprint type based on timing
+            if abs(speed_power_timing_diff) < 1.0:
+                out['sprint_type'] = 'Synchronized'
+            elif speed_power_timing_diff > 0:
+                out['sprint_type'] = 'Power-First'
+            else:
+                out['sprint_type'] = 'Speed-First'
+        
+        # Distance covered during sprint
         distance_covered = seg['enhanced_speed'].sum()  # meters
         if distance_covered > 0:
             out['mechanical_efficiency_proxy'] = out['work_kJ'] / (distance_covered / 1000)  # kJ/km
+            out['sprint_distance_m'] = distance_covered
         else:
             out['mechanical_efficiency_proxy'] = np.nan
+            out['sprint_distance_m'] = 0
     else:
         out['mechanical_efficiency_proxy'] = np.nan
+        # Set default values for speed metrics
+        out['speed_increase_kph'] = np.nan
+        out['max_speed_kph'] = np.nan
+        out['speed_ttp_s'] = np.nan
+        out['speed_acceleration_rate'] = np.nan
+        out['speed_consistency_cv'] = np.nan
+        out['speed_time_above_90%_s'] = np.nan
+        out['speed_power_timing_diff_s'] = np.nan
+        out['sprint_type'] = 'No Speed Data'
+        out['sprint_distance_m'] = np.nan
+    
+    # Calculate comprehensive sprint efficiency score
+    if all(k in out for k in ['power_acceleration_rate', 'power_time_above_80%_s', 'power_fade_%']):
+        # Base score starts at 100
+        efficiency_score = 100
+        
+        # Bonus for quick acceleration (faster = better)
+        if not np.isnan(out['power_acceleration_rate']) and out['power_acceleration_rate'] > 0:
+            # Bonus up to 20 points for very fast acceleration
+            accel_bonus = min(20, out['power_acceleration_rate'] / 100)
+            efficiency_score += accel_bonus
+        
+        # Bonus for sustained effort (longer time above 80% = better)
+        if out['power_time_above_80%_s'] > 0:
+            # Bonus up to 15 points for sustained effort
+            sustain_bonus = min(15, out['power_time_above_80%_s'] / 2)
+            efficiency_score += sustain_bonus
+        
+        # Penalty for power fade (less fade = better)
+        if not np.isnan(out['power_fade_%']):
+            # Penalty up to 25 points for excessive fade
+            fade_penalty = min(25, abs(out['power_fade_%']) / 4)
+            efficiency_score -= fade_penalty
+        
+        # Ensure score stays within reasonable bounds
+        efficiency_score = max(0, min(150, efficiency_score))
+        out['sprint_efficiency_score'] = round(efficiency_score, 1)
     
     return out
 
@@ -401,6 +582,243 @@ def sprint_summary(df, start_ts, win=10):
     return out
 
 
+def display_enhanced_sprint_metrics(sprint_data):
+    """Display enhanced sprint metrics in an organized, readable format."""
+    if not sprint_data:
+        print("No sprint data to display.")
+        return
+    
+    print("\n🚀 ENHANCED SPRINT ANALYSIS")
+    print("=" * 60)
+    
+    for i, sprint in enumerate(sprint_data, 1):
+        print(f"\n📊 Sprint {i} - {sprint.get('start', 'N/A')}")
+        print("-" * 40)
+        
+        # Timing Analysis
+        print("⏱️  TIMING ANALYSIS:")
+        if 'power_ttp_s' in sprint:
+            print(f"   Power Peak: {sprint['power_ttp_s']:.2f}s")
+        if 'torque_ttp_s' in sprint:
+            print(f"   Torque Peak: {sprint['torque_ttp_s']:.2f}s")
+        if 'cadence_ttp_s' in sprint:
+            print(f"   Cadence Peak: {sprint['cadence_ttp_s']:.2f}s")
+        
+        # Peak Sequence
+        if 'peak_sequence' in sprint:
+            print(f"   Peak Sequence: {sprint['peak_sequence']}")
+        if 'peak_synchronization_s' in sprint:
+            print(f"   Peak Spread: {sprint['peak_synchronization_s']:.2f}s")
+        
+        # Power Curve Analysis
+        print("\n⚡ POWER CURVE ANALYSIS:")
+        for threshold in [50, 75, 90]:
+            key = f'power_time_to_{threshold}%_s'
+            if key in sprint and not np.isnan(sprint[key]):
+                print(f"   Time to {threshold}%: {sprint[key]:.2f}s")
+        
+        # Torque Curve Analysis
+        print("\n🔧 TORQUE CURVE ANALYSIS:")
+        for threshold in [50, 75, 90]:
+            key = f'torque_time_to_{threshold}%_s'
+            if key in sprint and not np.isnan(sprint[key]):
+                print(f"   Time to {threshold}%: {sprint[key]:.2f}s")
+        
+        # Cadence Curve Analysis
+        print("\n🔄 CADENCE CURVE ANALYSIS:")
+        for threshold in [50, 75, 90]:
+            key = f'cadence_time_to_{threshold}%_s'
+            if key in sprint and not np.isnan(sprint[key]):
+                print(f"   Time to {threshold}%: {sprint[key]:.2f}s")
+        
+        # Cross-Metric Delays
+        print("\n⏰ PEAK DELAYS:")
+        if 'torque_peak_delay_vs_power_s' in sprint:
+            delay = sprint['torque_peak_delay_vs_power_s']
+            if delay > 0:
+                print(f"   Torque peaks {delay:.2f}s AFTER power")
+            elif delay < 0:
+                print(f"   Torque peaks {abs(delay):.2f}s BEFORE power")
+            else:
+                print(f"   Torque and power peak together")
+        
+        if 'cadence_peak_delay_vs_power_s' in sprint:
+            delay = sprint['cadence_peak_delay_vs_power_s']
+            if delay > 0:
+                print(f"   Cadence peaks {delay:.2f}s AFTER power")
+            elif delay < 0:
+                print(f"   Cadence peaks {abs(delay):.2f}s BEFORE power")
+            else:
+                print(f"   Cadence and power peak together")
+        
+        # Performance Metrics
+        print("\n📈 PERFORMANCE METRICS:")
+        if 'work_kJ' in sprint:
+            print(f"   Total Work: {sprint['work_kJ']:.2f} kJ")
+        if 'mechanical_efficiency_proxy' in sprint and not np.isnan(sprint['mechanical_efficiency_proxy']):
+            print(f"   Efficiency: {sprint['mechanical_efficiency_proxy']:.1f} kJ/km")
+        if 'fade_%' in sprint:
+            print(f"   Power Fade: {sprint['fade_%']:.1f}%")
+        
+        # Enhanced Metrics
+        print("\n🚀 ENHANCED METRICS:")
+        if 'power_acceleration_rate' in sprint and not np.isnan(sprint['power_acceleration_rate']):
+            print(f"   Power Acceleration: {sprint['power_acceleration_rate']:.0f} W/s")
+        if 'sprint_efficiency_score' in sprint:
+            score = sprint['sprint_efficiency_score']
+            if score >= 120:
+                rating = "🔥 EXCELLENT"
+            elif score >= 100:
+                rating = "✅ GOOD"
+            elif score >= 80:
+                rating = "⚠️  FAIR"
+            else:
+                rating = "❌ POOR"
+            print(f"   Efficiency Score: {score}/150 ({rating})")
+        
+        # Speed Analysis
+        print("\n🚴 SPEED ANALYSIS:")
+        if 'speed_increase_kph' in sprint and not np.isnan(sprint['speed_increase_kph']):
+            speed_gain = sprint['speed_increase_kph']
+            if speed_gain > 0:
+                print(f"   Speed Gain: +{speed_gain:.1f} km/h")
+            else:
+                print(f"   Speed Loss: {speed_gain:.1f} km/h")
+        
+        if 'max_speed_kph' in sprint and not np.isnan(sprint['max_speed_kph']):
+            print(f"   Peak Speed: {sprint['max_speed_kph']:.1f} km/h")
+        
+        if 'speed_ttp_s' in sprint and not np.isnan(sprint['speed_ttp_s']):
+            print(f"   Time to Max Speed: {sprint['speed_ttp_s']:.1f}s")
+        
+        if 'speed_acceleration_rate' in sprint and not np.isnan(sprint['speed_acceleration_rate']):
+            print(f"   Speed Acceleration: {sprint['speed_acceleration_rate']:.1f} km/h/s")
+        
+        if 'sprint_type' in sprint:
+            print(f"   Sprint Type: {sprint['sprint_type']}")
+        
+        if 'sprint_distance_m' in sprint and not np.isnan(sprint['sprint_distance_m']):
+            print(f"   Distance Covered: {sprint['sprint_distance_m']:.0f}m")
+        
+        print("-" * 40)
+
+
+def analyze_sprint_technique_patterns(sprint_data):
+    """Analyze sprint technique patterns across multiple sprints."""
+    if not sprint_data or len(sprint_data) < 2:
+        print("Need at least 2 sprints to analyze patterns.")
+        return
+    
+    print("\n🔍 SPRINT TECHNIQUE PATTERN ANALYSIS")
+    print("=" * 60)
+    
+    # Convert to DataFrame for easier analysis
+    df_sprints = pd.DataFrame(sprint_data)
+    
+    # Consistency analysis
+    print("\n📊 CONSISTENCY ANALYSIS:")
+    for metric in ['power_ttp_s', 'torque_ttp_s', 'cadence_ttp_s', 'speed_ttp_s']:
+        if metric in df_sprints.columns:
+            values = df_sprints[metric].dropna()
+            if len(values) > 1:
+                mean_val = values.mean()
+                std_val = values.std()
+                cv = (std_val / mean_val) * 100 if mean_val != 0 else np.nan
+                print(f"   {metric.replace('_', ' ').title()}: {mean_val:.2f}s ± {std_val:.2f}s (CV: {cv:.1f}%)")
+    
+    # Peak timing relationships
+    print("\n⏰ PEAK TIMING RELATIONSHIPS:")
+    if all(col in df_sprints.columns for col in ['power_ttp_s', 'torque_ttp_s', 'cadence_ttp_s']):
+        # Calculate correlations
+        power_torque_corr = df_sprints['power_ttp_s'].corr(df_sprints['torque_ttp_s'])
+        power_cadence_corr = df_sprints['power_ttp_s'].corr(df_sprints['cadence_ttp_s'])
+        torque_cadence_corr = df_sprints['torque_ttp_s'].corr(df_sprints['cadence_ttp_s'])
+        
+        print(f"   Power-Torque timing correlation: {power_torque_corr:.3f}")
+        print(f"   Power-Cadence timing correlation: {power_cadence_corr:.3f}")
+        print(f"   Torque-Cadence timing correlation: {torque_cadence_corr:.3f}")
+        
+        # Interpret correlations
+        if abs(power_torque_corr) > 0.7:
+            print("   → Strong power-torque timing relationship")
+        elif abs(power_torque_corr) > 0.4:
+            print("   → Moderate power-torque timing relationship")
+        else:
+            print("   → Weak power-torque timing relationship")
+    
+    # Speed analysis
+    print("\n🚴 SPEED ANALYSIS:")
+    if 'speed_increase_kph' in df_sprints.columns:
+        speed_increases = df_sprints['speed_increase_kph'].dropna()
+        if len(speed_increases) > 0:
+            avg_speed_gain = speed_increases.mean()
+            max_speed_gain = speed_increases.max()
+            min_speed_gain = speed_increases.min()
+            
+            print(f"   Average Speed Gain: {avg_speed_gain:.1f} km/h")
+            print(f"   Best Speed Gain: {max_speed_gain:.1f} km/h")
+            print(f"   Worst Speed Gain: {min_speed_gain:.1f} km/h")
+            
+            if 'sprint_type' in df_sprints.columns:
+                sprint_types = df_sprints['sprint_type'].value_counts()
+                print(f"   Sprint Types: {dict(sprint_types)}")
+    
+    # Speed vs Power timing analysis
+    if all(col in df_sprints.columns for col in ['power_ttp_s', 'speed_ttp_s']):
+        print("\n⚡ SPEED vs POWER TIMING:")
+        power_speed_corr = df_sprints['power_ttp_s'].corr(df_sprints['speed_ttp_s'])
+        print(f"   Power-Speed timing correlation: {power_speed_corr:.3f}")
+        
+        if abs(power_speed_corr) > 0.7:
+            print("   → Strong power-speed timing relationship")
+        elif abs(power_speed_corr) > 0.4:
+            print("   → Moderate power-speed timing relationship")
+        else:
+            print("   → Weak power-speed timing relationship")
+    
+    # Sprint progression analysis
+    print("\n📈 SPRINT PROGRESSION ANALYSIS:")
+    if 'start' in df_sprints.columns:
+        # Sort by start time to see progression
+        df_sprints_sorted = df_sprints.sort_values('start')
+        
+        # Check if timing improves over sprints
+        if 'power_ttp_s' in df_sprints_sorted.columns:
+            power_times = df_sprints_sorted['power_ttp_s'].dropna()
+            if len(power_times) > 1:
+                first_sprint = power_times.iloc[0]
+                last_sprint = power_times.iloc[-1]
+                improvement = first_sprint - last_sprint
+                if improvement > 0.1:
+                    print(f"   Power timing improved by {improvement:.2f}s over sprints")
+                elif improvement < -0.1:
+                    print(f"   Power timing degraded by {abs(improvement):.2f}s over sprints")
+                else:
+                    print(f"   Power timing remained consistent (±{abs(improvement):.2f}s)")
+    
+    # Technique classification
+    print("\n🎯 TECHNIQUE CLASSIFICATION:")
+    if all(col in df_sprints.columns for col in ['power_ttp_s', 'torque_ttp_s', 'cadence_ttp_s']):
+        avg_power_ttp = df_sprints['power_ttp_s'].mean()
+        avg_torque_ttp = df_sprints['torque_ttp_s'].mean()
+        avg_cadence_ttp = df_sprints['cadence_ttp_s'].mean()
+        
+        # Classify sprint technique
+        if avg_power_ttp < 2.0 and avg_torque_ttp < 2.0:
+            print("   → EXPLOSIVE: Quick power and torque development")
+        elif avg_power_ttp < 3.0 and avg_torque_ttp < 3.0:
+            print("   → MODERATE: Balanced power and torque timing")
+        else:
+            print("   → GRADUAL: Slower power and torque development")
+        
+        if avg_cadence_ttp < avg_power_ttp:
+            print("   → CADENCE-DRIVEN: Cadence peaks before power")
+        else:
+            print("   → POWER-DRIVEN: Power peaks before cadence")
+    
+    print("-" * 60)
+
+
 def create_sprint_plots(best):
     """Create scatter plots for sprint analysis."""
     if best is None or best.empty:
@@ -423,9 +841,9 @@ def create_sprint_plots(best):
         fig.update_layout(template='plotly_white', title=title,
                           xaxis_title=xlab, yaxis_title=ylab, height=480)
         # Save to HTML file instead of showing
-        filename = f"{xlab.lower().replace(' ', '_')}_vs_{ylab.lower().replace(' ', '_')}.html"
-        fig.write_html(filename)
-        print(f"Plot saved to {filename}")
+        # filename = f"{xlab.lower().replace(' ', '_')}_vs_{ylab.lower().replace(' ', '_')}.html"
+        # fig.write_html(filename)  # Removed file generation
+        # print(f"Plot saved to {filename}")  # Plots shown in dashboard instead
 
     scatter_xy('Torque (Nm)', 'Power (W)',
                'Torque vs Power — best 10‑s efforts', 'Torque (Nm)', 'Power (W)')
@@ -470,9 +888,9 @@ def plot_sprint_trajectories(df, best10):
         )
         
         # Save to HTML file
-        filename = f"sprint_{i+1}_trajectory.html"
-        fig.write_html(filename)
-        print(f"Trajectory plot saved to {filename}")
+        # filename = f"sprint_{i+1}_trajectory.html"
+        # fig.write_html(filename)  # Removed file generation
+        # print(f"Trajectory plot saved to {filename}")  # Plots shown in dashboard instead
         
         # Also plot speed curve
         if 'enhanced_speed' in seg.columns:
@@ -494,9 +912,9 @@ def plot_sprint_trajectories(df, best10):
                 height=400
             )
             
-            filename_speed = f"sprint_{i+1}_speed_curve.html"
-            fig_speed.write_html(filename_speed)
-            print(f"Speed curve saved to {filename_speed}")
+            # filename_speed = f"sprint_{i+1}_speed_curve.html"
+            # fig_speed.write_html(filename_speed)  # Removed file generation
+            # print(f"Speed curve saved to {filename_speed}")  # Plots shown in dashboard instead
 
 
 def display_sprint_analysis(best10, micro_df, sprint_summary_df):
@@ -1315,32 +1733,161 @@ def detect_intervals_ml(df, ftp):
             end_idx = df.index.get_loc(end_time)
             interval_data = df.iloc[start_idx:end_idx + 1]
             
+            # Basic power metrics
             avg_power = interval_data['power'].mean()
             max_power = interval_data['power'].max()
             work_kj = interval_data['power'].sum() / 1000
+            
+            # Calculate power consistency (CV)
+            power_cv = interval_data['power'].std() / avg_power if avg_power > 0 else 0
+            
+            # Calculate fade
+            power_fade = (max_power - avg_power) / max_power if max_power > 0 else 0
             
             # Get ML confidence if available
             ml_confidence = None
             if probabilities is not None:
                 ml_confidence = probabilities[start_idx:end_idx + 1].mean()
             
+            # Calculate cadence metrics
+            avg_cadence = np.nan
+            max_cadence = np.nan
+            min_cadence = np.nan
+            cadence_drift = 0
+            if 'cadence' in interval_data.columns:
+                cadence_data = interval_data['cadence'].dropna()
+                if not cadence_data.empty:
+                    avg_cadence = cadence_data.mean()
+                    max_cadence = cadence_data.max()
+                    min_cadence = cadence_data.min()
+                    if len(cadence_data) > 1:
+                        cadence_drift = (cadence_data.iloc[-1] - cadence_data.iloc[0]) / duration
+            
+            # Calculate heart rate metrics
+            avg_hr = np.nan
+            max_hr = np.nan
+            hr_drift = 0
+            if 'heart_rate' in interval_data.columns:
+                hr_data = interval_data['heart_rate'].dropna()
+                if not hr_data.empty:
+                    avg_hr = hr_data.mean()
+                    max_hr = hr_data.max()
+                    if len(hr_data) > 1:
+                        hr_drift = hr_data.iloc[-1] - hr_data.iloc[0]
+            
+            # Calculate speed metrics
+            avg_speed_kph = np.nan
+            max_speed_kph = np.nan
+            speed_gain_kph = 0
+            if 'enhanced_speed' in interval_data.columns:
+                speed_data = interval_data['enhanced_speed'].dropna()
+                if not speed_data.empty:
+                    avg_speed_kph = speed_data.mean() * 3.6  # Convert to km/h
+                    max_speed_kph = speed_data.max() * 3.6
+                    if len(speed_data) > 1:
+                        speed_gain_kph = (speed_data.iloc[-1] - speed_data.iloc[0]) * 3.6
+            
+            # Calculate torque metrics
+            avg_torque = np.nan
+            max_torque = np.nan
+            torque_stability = 0
+            if 'torque' in interval_data.columns:
+                torque_data = interval_data['torque'].dropna()
+                if not torque_data.empty:
+                    avg_torque = torque_data.mean()
+                    max_torque = torque_data.max()
+                    if len(torque_data) > 1:
+                        torque_stability = 1 / (1 + torque_data.std())
+            
+            # Calculate normalized power (if duration allows)
+            normalized_power = avg_power
+            if duration >= 30:  # Only for efforts >= 30s
+                normalized_power = interval_data['power'].rolling(30, min_periods=30).mean().iloc[-1]
+            
+            # Calculate altitude metrics if available
+            altitude_gain = 0
+            if 'altitude' in interval_data.columns:
+                alt_data = interval_data['altitude'].dropna()
+                if len(alt_data) > 1:
+                    altitude_gain = alt_data.iloc[-1] - alt_data.iloc[0]
+            
+            # Calculate grade metrics if available
+            avg_grade = np.nan
+            if 'grade' in interval_data.columns:
+                grade_data = interval_data['grade'].dropna()
+                if not grade_data.empty:
+                    avg_grade = grade_data.mean()
+            
+            # Calculate quality score components
+            power_score = min(100, (avg_power / ftp) * 100) if ftp > 0 else 0
+            duration_score = min(100, (duration / 300) * 100)  # Max at 5min
+            consistency_score = max(0, 100 - (power_cv * 200))
+            fade_score = max(0, 100 - (power_fade * 100))
+            cadence_score = max(0, 100 - abs(cadence_drift) * 10) if not np.isnan(cadence_drift) else 0
+            torque_score = torque_stability * 100
+            work_score = min(100, (work_kj / (duration / 60)) * 2) if duration > 0 else 0
+            
+            # Calculate overall quality score
+            quality_score = (
+                power_score * 0.25 +
+                duration_score * 0.20 +
+                consistency_score * 0.20 +
+                fade_score * 0.15 +
+                cadence_score * 0.10 +
+                torque_score * 0.05 +
+                work_score * 0.05
+            )
+            
             interval_info = {
                 'start_time': start_time,
                 'end_time': end_time,
                 'duration': duration,
                 'duration_s': duration,  # Add this for SprintV1 compatibility
+                'duration_min': duration / 60,  # Add duration in minutes
                 'avg_power': avg_power,
                 'max_power': max_power,
                 'work_kj': work_kj,
                 'source': 'ml_enhanced',
                 'ml_confidence': ml_confidence,
-                'quality_score': (avg_power / ftp * 100) if ftp > 0 else 0,
+                'quality_score': quality_score,
                 # Add SprintV1 compatibility columns
                 'start_str': start_time.strftime('%H:%M:%S'),
                 'end_str': end_time.strftime('%H:%M:%S'),
                 'duration_str': f"{duration}s" if duration < 60 else f"{duration/60:.1f}min",
                 'intensity_factor': avg_power / ftp if ftp > 0 else 0,
-                'training_zone': classify_interval(duration, avg_power / ftp if ftp > 0 else 0)
+                'training_zone': classify_interval(duration, avg_power / ftp if ftp > 0 else 0),
+                # Add comprehensive metrics
+                'power_cv': power_cv,
+                'power_fade': power_fade,
+                'avg_cadence': avg_cadence,
+                'max_cadence': max_cadence,
+                'min_cadence': min_cadence,
+                'cadence_drift': cadence_drift,
+                'avg_hr': avg_hr,
+                'max_hr': max_hr,
+                'hr_drift': hr_drift,
+                'avg_speed_kph': avg_speed_kph,
+                'max_speed_kph': max_speed_kph,
+                'speed_gain_kph': speed_gain_kph,
+                'avg_torque': avg_torque,
+                'max_torque': max_torque,
+                'torque_stability': torque_stability,
+                'altitude_gain': altitude_gain,
+                'avg_grade': avg_grade,
+                'normalized_power': normalized_power,
+                'power_per_kg': avg_power / rider_mass_kg if rider_mass_kg > 0 else np.nan,
+                'np_per_kg': normalized_power / rider_mass_kg if rider_mass_kg > 0 else np.nan,
+                'work_per_min': work_kj / (duration / 60) if duration > 0 else 0,
+                'power_zone': classify_power_zone(avg_power, ftp),
+                'hr_zone': classify_hr_zone(avg_hr, LTHR) if not np.isnan(avg_hr) else 'N/A',
+                'sprint_efficiency': calculate_sprint_efficiency(avg_power, max_power, power_fade, duration) if duration <= 60 else np.nan,
+                'mechanical_efficiency': calculate_mechanical_efficiency(work_kj, speed_gain_kph, duration) if not np.isnan(speed_gain_kph) and speed_gain_kph > 0 else np.nan,
+                'power_consistency_score': calculate_power_consistency_score(power_cv, power_fade),
+                'overall_performance_score': calculate_overall_performance_score(quality_score, avg_power, ftp, duration),
+                'power_to_weight_ratio': avg_power / rider_mass_kg if rider_mass_kg > 0 else np.nan,
+                'np_to_weight_ratio': normalized_power / rider_mass_kg if rider_mass_kg > 0 else np.nan,
+                'power_zone_number': get_power_zone_number(avg_power, ftp),
+                'hr_zone_number': get_hr_zone_number(avg_hr, LTHR)
             }
             all_intervals.append(interval_info)
         
@@ -1356,12 +1903,745 @@ def detect_intervals_ml(df, ftp):
     
     # Sort by quality score (descending) and add ranking
     intervals_df = intervals_df.sort_values('quality_score', ascending=False).reset_index(drop=True)
-    intervals_df['rank'] = range(1, len(intervals_df) + 1)
+    intervals_df['rank'] = intervals_df['quality_score'].rank(ascending=False, method='dense').astype(int)
     
     print(f"\n✅ Final result: {len(intervals_df)} intervals detected")
     print(f"   Enhanced ML: {len(all_intervals)} intervals")
     
     return intervals_df
+
+
+def compare_similar_intervals(intervals_df, comparison_type='duration'):
+    """
+    Compare intervals of similar characteristics to analyze consistency and patterns.
+    
+    Args:
+        intervals_df: DataFrame with interval information
+        comparison_type: Type of comparison ('duration', 'intensity', 'zone', 'source')
+    
+    Returns:
+        DataFrame with comparison results
+    """
+    if intervals_df.empty:
+        return pd.DataFrame()
+    
+    comparisons = []
+    
+    if comparison_type == 'duration':
+        # Group intervals by duration ranges
+        intervals_df['duration_range'] = pd.cut(intervals_df['duration_s'], 
+                                               bins=[0, 60, 300, 600, 1200, float('inf')],
+                                               labels=['0-1min', '1-5min', '5-10min', '10-20min', '20min+'])
+        
+        for duration_range in intervals_df['duration_range'].unique():
+            if pd.isna(duration_range):
+                continue
+                
+            similar_intervals = intervals_df[intervals_df['duration_range'] == duration_range]
+            if len(similar_intervals) >= 2:
+                comparison = analyze_interval_group(similar_intervals, f"Duration: {duration_range}")
+                comparisons.append(comparison)
+    
+    elif comparison_type == 'intensity':
+        # Group intervals by intensity factor ranges
+        intervals_df['intensity_range'] = pd.cut(intervals_df['intensity_factor'], 
+                                                bins=[0, 0.8, 1.0, 1.2, 1.5, float('inf')],
+                                                labels=['<80% FTP', '80-100% FTP', '100-120% FTP', '120-150% FTP', '>150% FTP'])
+        
+        for intensity_range in intervals_df['intensity_range'].unique():
+            if pd.isna(intensity_range):
+                continue
+                
+            similar_intervals = intervals_df[intervals_df['intensity_range'] == intensity_range]
+            if len(similar_intervals) >= 2:
+                comparison = analyze_interval_group(similar_intervals, f"Intensity: {intensity_range}")
+                comparisons.append(comparison)
+    
+    elif comparison_type == 'zone':
+        # Group intervals by power zone
+        if 'power_zone' in intervals_df.columns:
+            for zone in intervals_df['power_zone'].unique():
+                if pd.isna(zone) or zone == 'N/A':
+                    continue
+                    
+                similar_intervals = intervals_df[intervals_df['power_zone'] == zone]
+                if len(similar_intervals) >= 2:
+                    comparison = analyze_interval_group(similar_intervals, f"Zone: {zone}")
+                    comparisons.append(comparison)
+    
+    elif comparison_type == 'source':
+        # Group intervals by detection source
+        if 'source' in intervals_df.columns:
+            for source in intervals_df['source'].unique():
+                similar_intervals = intervals_df[intervals_df['source'] == source]
+                if len(similar_intervals) >= 2:
+                    comparison = analyze_interval_group(similar_intervals, f"Source: {source}")
+                    comparisons.append(comparison)
+    
+    if comparisons:
+        return pd.DataFrame(comparisons)
+    else:
+        return pd.DataFrame()
+
+
+def analyze_interval_group(intervals, group_name):
+    """Analyze a group of similar intervals for consistency and patterns."""
+    analysis = {'group_name': group_name, 'interval_count': len(intervals)}
+    
+    # Basic metrics
+    if 'avg_power' in intervals.columns:
+        analysis.update({
+            'avg_power_mean': intervals['avg_power'].mean(),
+            'avg_power_std': intervals['avg_power'].std(),
+            'avg_power_cv': (intervals['avg_power'].std() / intervals['avg_power'].mean()) * 100 if intervals['avg_power'].mean() > 0 else 0,
+            'avg_power_min': intervals['avg_power'].min(),
+            'avg_power_max': intervals['avg_power'].max(),
+            'avg_power_range': intervals['avg_power'].max() - intervals['avg_power'].min()
+        })
+    
+    if 'max_power' in intervals.columns:
+        analysis.update({
+            'max_power_mean': intervals['max_power'].mean(),
+            'max_power_std': intervals['max_power'].std(),
+            'max_power_cv': (intervals['max_power'].std() / intervals['max_power'].mean()) * 100 if intervals['max_power'].mean() > 0 else 0
+        })
+    
+    if 'duration_s' in intervals.columns:
+        analysis.update({
+            'duration_mean': intervals['duration_s'].mean(),
+            'duration_std': intervals['duration_s'].std(),
+            'duration_cv': (intervals['duration_s'].std() / intervals['duration_s'].mean()) * 100 if intervals['duration_s'].mean() > 0 else 0
+        })
+    
+    # Cadence metrics
+    if 'avg_cadence' in intervals.columns:
+        cadence_data = intervals['avg_cadence'].dropna()
+        if not cadence_data.empty:
+            analysis.update({
+                'avg_cadence_mean': cadence_data.mean(),
+                'avg_cadence_std': cadence_data.std(),
+                'avg_cadence_cv': (cadence_data.std() / cadence_data.mean()) * 100 if cadence_data.mean() > 0 else 0
+            })
+    
+    # Heart rate metrics
+    if 'avg_hr' in intervals.columns:
+        hr_data = intervals['avg_hr'].dropna()
+        if not hr_data.empty:
+            analysis.update({
+                'avg_hr_mean': hr_data.mean(),
+                'avg_hr_std': hr_data.std(),
+                'avg_hr_cv': (hr_data.std() / hr_data.mean()) * 100 if hr_data.mean() > 0 else 0
+            })
+    
+    # Speed metrics
+    if 'avg_speed_kph' in intervals.columns:
+        speed_data = intervals['avg_speed_kph'].dropna()
+        if not speed_data.empty:
+            analysis.update({
+                'avg_speed_mean': speed_data.mean(),
+                'avg_speed_std': speed_data.std(),
+                'avg_speed_cv': (speed_data.std() / speed_data.mean()) * 100 if speed_data.mean() > 0 else 0
+            })
+    
+    # Quality metrics
+    if 'quality_score' in intervals.columns:
+        analysis.update({
+            'quality_score_mean': intervals['quality_score'].mean(),
+            'quality_score_std': intervals['quality_score'].std(),
+            'quality_score_cv': (intervals['quality_score'].std() / intervals['quality_score'].mean()) * 100 if intervals['quality_score'].mean() > 0 else 0
+        })
+    
+    # Consistency metrics
+    if 'power_cv' in intervals.columns:
+        analysis.update({
+            'power_cv_mean': intervals['power_cv'].mean(),
+            'power_cv_mean': intervals['power_cv'].mean(),
+            'power_cv_std': intervals['power_cv'].std()
+        })
+    
+    if 'power_fade' in intervals.columns:
+        analysis.update({
+            'power_fade_mean': intervals['power_fade'].mean(),
+            'power_fade_std': intervals['power_fade'].std()
+        })
+    
+    # Performance trends
+    if len(intervals) >= 3 and 'start_time' in intervals.columns:
+        # Sort by time and check for trends
+        sorted_intervals = intervals.sort_values('start_time')
+        first_half = sorted_intervals.iloc[:len(sorted_intervals)//2]
+        second_half = sorted_intervals.iloc[len(sorted_intervals)//2:]
+        
+        if 'avg_power' in intervals.columns:
+            first_avg = first_half['avg_power'].mean()
+            second_avg = second_half['avg_power'].mean()
+            analysis['power_trend'] = (second_avg - first_avg) / first_avg * 100 if first_avg > 0 else 0
+    
+    return analysis
+
+
+def create_interval_comparison_plots(intervals_df):
+    """Create comprehensive comparison plots for intervals."""
+    if intervals_df.empty:
+        return []
+    
+    plots = []
+    
+    # 1. Duration-based comparison
+    duration_comparison = compare_similar_intervals(intervals_df, 'duration')
+    if not duration_comparison.empty:
+        plots.append(create_duration_comparison_plot(duration_comparison))
+    
+    # 2. Intensity-based comparison
+    intensity_comparison = compare_similar_intervals(intervals_df, 'intensity')
+    if not intensity_comparison.empty:
+        plots.append(create_intensity_comparison_plot(intensity_comparison))
+    
+    # 3. Zone-based comparison
+    zone_comparison = compare_similar_intervals(intervals_df, 'zone')
+    if not zone_comparison.empty:
+        plots.append(create_zone_comparison_plot(zone_comparison))
+    
+    # 4. Source-based comparison
+    source_comparison = compare_similar_intervals(intervals_df, 'source')
+    if not source_comparison.empty:
+        plots.append(create_source_comparison_plot(source_comparison))
+    
+    # 5. Performance consistency analysis
+    consistency_plot = create_consistency_analysis_plot(intervals_df)
+    if consistency_plot:
+        plots.append(consistency_plot)
+    
+    return plots
+
+
+def create_duration_comparison_plot(duration_comparison):
+    """Create plot comparing intervals by duration groups."""
+    import plotly.graph_objects as go
+    
+    fig = go.Figure()
+    
+    # Power consistency by duration
+    fig.add_trace(go.Bar(
+        x=duration_comparison['group_name'],
+        y=duration_comparison['avg_power_cv'],
+        name='Power CV (%)',
+        marker_color='#e74c3c',
+        text=[f"{cv:.1f}%" for cv in duration_comparison['avg_power_cv']],
+        textposition='auto',
+        hovertemplate="Group: %{x}<br>Power CV: %{y:.1f}%<br>Count: %{customdata}<extra></extra>",
+        customdata=duration_comparison['interval_count']
+    ))
+    
+    # Add cadence consistency if available
+    if 'avg_cadence_cv' in duration_comparison.columns:
+        fig.add_trace(go.Bar(
+            x=duration_comparison['group_name'],
+            y=duration_comparison['avg_cadence_cv'],
+            name='Cadence CV (%)',
+            marker_color='#3498db',
+            text=[f"{cv:.1f}%" for cv in duration_comparison['avg_cadence_cv']],
+            textposition='auto',
+            hovertemplate="Group: %{x}<br>Cadence CV: %{y:.1f}%<br>Count: %{customdata}<extra></extra>",
+            customdata=duration_comparison['interval_count']
+        ))
+    else:
+        # Duration consistency as fallback
+        fig.add_trace(go.Bar(
+            x=duration_comparison['group_name'],
+            y=duration_comparison['duration_cv'],
+            name='Duration CV (%)',
+            marker_color='#f39c12',
+            text=[f"{cv:.1f}%" for cv in duration_comparison['duration_cv']],
+            textposition='auto',
+            hovertemplate="Group: %{x}<br>Duration CV: %{y:.1f}%<br>Count: %{customdata}<extra></extra>",
+            customdata=duration_comparison['interval_count']
+        ))
+    
+    fig.update_layout(
+        title='Interval Consistency by Duration Group (Lower CV = More Consistent)',
+        xaxis_title='Duration Groups',
+        yaxis_title='Coefficient of Variation (%)',
+        template='plotly_white',
+        height=300,
+        barmode='group',
+        margin=dict(l=40, r=40, t=60, b=40),
+        font=dict(size=11)
+    )
+    
+    return fig
+
+
+def create_intensity_comparison_plot(intensity_comparison):
+    """Create plot comparing intervals by intensity groups."""
+    import plotly.graph_objects as go
+    
+    fig = go.Figure()
+    
+    # Power consistency by intensity
+    fig.add_trace(go.Bar(
+        x=intensity_comparison['group_name'],
+        y=intensity_comparison['avg_power_cv'],
+        name='Power CV (%)',
+        marker_color='#27ae60',
+        text=[f"{cv:.1f}%" for cv in intensity_comparison['avg_power_cv']],
+        textposition='auto',
+        hovertemplate="Group: %{x}<br>Power CV: %{y:.1f}%<br>Avg Power: %{customdata}W<extra></extra>",
+        customdata=intensity_comparison['avg_power_mean']
+    ))
+    
+    # Quality score by intensity
+    if 'quality_score_cv' in intensity_comparison.columns:
+        fig.add_trace(go.Bar(
+            x=intensity_comparison['group_name'],
+            y=intensity_comparison['quality_score_cv'],
+            name='Quality Score CV (%)',
+            marker_color='#e67e22',
+            text=[f"{cv:.1f}%" for cv in intensity_comparison['quality_score_cv']],
+            textposition='auto',
+            hovertemplate="Group: %{x}<br>Quality CV: %{y:.1f}%<br>Avg Quality: %{customdata}<extra></extra>",
+            customdata=intensity_comparison['quality_score_mean']
+        ))
+    
+    fig.update_layout(
+        title='Interval Consistency by Intensity Group (Lower CV = More Consistent)',
+        xaxis_title='Intensity Groups',
+        yaxis_title='Coefficient of Variation (%)',
+        template='plotly_white',
+        height=300,
+        barmode='group',
+        margin=dict(l=40, r=40, t=60, b=40),
+        font=dict(size=11)
+    )
+    
+    return fig
+
+
+def create_zone_comparison_plot(zone_comparison):
+    """Create plot comparing intervals by power zones."""
+    import plotly.graph_objects as go
+    
+    fig = go.Figure()
+    
+    # Power consistency by zone
+    fig.add_trace(go.Bar(
+        x=zone_comparison['group_name'],
+        y=zone_comparison['avg_power_cv'],
+        name='Power CV (%)',
+        marker_color='#8e44ad',
+        text=[f"{cv:.1f}%" for cv in zone_comparison['avg_power_cv']],
+        textposition='auto',
+        hovertemplate="Zone: %{x}<br>Power CV: %{y:.1f}%<br>Count: %{customdata}<extra></extra>",
+        customdata=zone_comparison['interval_count']
+    ))
+    
+    # Cadence consistency by zone
+    if 'avg_cadence_cv' in zone_comparison.columns:
+        fig.add_trace(go.Bar(
+            x=zone_comparison['group_name'],
+            y=zone_comparison['avg_cadence_cv'],
+            name='Cadence CV (%)',
+            marker_color='#16a085',
+            text=[f"{cv:.1f}%" for cv in zone_comparison['avg_cadence_cv']],
+            textposition='auto',
+            hovertemplate="Zone: %{x}<br>Cadence CV: %{y:.1f}%<br>Count: %{customdata}<extra></extra>",
+            customdata=zone_comparison['interval_count']
+        ))
+    
+    fig.update_layout(
+        title='Interval Consistency by Power Zone (Lower CV = More Consistent)',
+        xaxis_title='Power Zones',
+        yaxis_title='Coefficient of Variation (%)',
+        template='plotly_white',
+        height=300,
+        barmode='group',
+        margin=dict(l=40, r=40, t=60, b=40),
+        font=dict(size=11)
+    )
+    
+    return fig
+
+
+def create_source_comparison_plot(source_comparison):
+    """Create plot comparing intervals by detection source."""
+    import plotly.graph_objects as go
+    
+    fig = go.Figure()
+    
+    # Power consistency by source
+    fig.add_trace(go.Bar(
+        x=source_comparison['group_name'],
+        y=source_comparison['avg_power_cv'],
+        name='Power CV (%)',
+        marker_color='#e377c2',
+        text=[f"{cv:.1f}%" for cv in source_comparison['avg_power_cv']],
+        textposition='auto'
+    ))
+    
+    # Quality score by source
+    if 'quality_score_cv' in source_comparison.columns:
+        fig.add_trace(go.Bar(
+            x=source_comparison['group_name'],
+            y=source_comparison['quality_score_cv'],
+            name='Quality Score CV (%)',
+            marker_color='#7f7f7f',
+            text=[f"{cv:.1f}%" for cv in source_comparison['quality_score_cv']],
+            textposition='auto'
+        ))
+    
+    fig.update_layout(
+        title='Interval Consistency by Detection Source (Lower CV = More Consistent)',
+        xaxis_title='Detection Sources',
+        yaxis_title='Coefficient of Variation (%)',
+        template='plotly_white',
+        height=300,
+        barmode='group',
+        margin=dict(l=40, r=40, t=60, b=40),
+        font=dict(size=11)
+    )
+    
+    return fig
+
+
+def create_consistency_analysis_plot(intervals_df):
+    """Create plot showing overall consistency analysis."""
+    import plotly.graph_objects as go
+    
+    if intervals_df.empty:
+        return None
+    
+    fig = go.Figure()
+    
+    # Calculate consistency metrics for each interval
+    consistency_data = []
+    for _, interval in intervals_df.iterrows():
+        consistency_score = 0
+        factors = []
+        
+        # Power consistency (lower CV = better)
+        if 'power_cv' in interval and not pd.isna(interval['power_cv']):
+            power_consistency = max(0, 100 - interval['power_cv'] * 10)
+            consistency_score += power_consistency * 0.4
+            factors.append(f"Power: {power_consistency:.0f}")
+        
+        # Duration consistency (if multiple similar intervals)
+        if 'duration_s' in interval:
+            duration_consistency = 100  # Base score, will be adjusted in group analysis
+            consistency_score += duration_consistency * 0.2
+            factors.append(f"Duration: {duration_consistency:.0f}")
+        
+        # Quality consistency
+        if 'quality_score' in interval and not pd.isna(interval['quality_score']):
+            quality_consistency = min(100, interval['quality_score'])
+            consistency_score += quality_consistency * 0.4
+            factors.append(f"Quality: {quality_consistency:.0f}")
+        
+        consistency_data.append({
+            'interval': f"#{interval.get('rank', 'N/A')}",
+            'consistency_score': consistency_score,
+            'factors': ' | '.join(factors)
+        })
+    
+    if not consistency_data:
+        return None
+    
+    consistency_df = pd.DataFrame(consistency_data)
+    
+    fig.add_trace(go.Bar(
+        x=consistency_df['interval'],
+        y=consistency_df['consistency_score'],
+        name='Consistency Score',
+        marker_color='#bcbd22',
+        text=[f"{score:.0f}" for score in consistency_df['consistency_score']],
+        textposition='auto',
+        hovertemplate="Interval: %{x}<br>Consistency Score: %{y:.0f}<br>Factors: %{customdata}<extra></extra>",
+        customdata=consistency_df['factors']
+    ))
+    
+    fig.update_layout(
+        title='Interval Consistency Analysis (Higher = More Consistent)',
+        xaxis_title='Intervals',
+        yaxis_title='Consistency Score (0-100)',
+        template='plotly_white',
+        height=300,
+        margin=dict(l=40, r=40, t=60, b=40),
+        font=dict(size=11)
+    )
+    
+    return fig
+
+
+def display_interval_comparison_analysis(intervals_df):
+    """Display comprehensive interval comparison analysis."""
+    if intervals_df.empty:
+        print("\nNo intervals available for comparison analysis.")
+        return
+    
+    print("\n" + "="*80)
+    print("INTERVAL COMPARISON ANALYSIS")
+    print("="*80)
+    
+    # 1. Duration-based comparison
+    print("\nDURATION-BASED COMPARISON")
+    print("-" * 50)
+    duration_comparison = compare_similar_intervals(intervals_df, 'duration')
+    if not duration_comparison.empty:
+        display_comparison_table(duration_comparison, 'Duration Groups')
+    else:
+        print("Insufficient intervals for duration-based comparison.")
+    
+    # 2. Intensity-based comparison
+    print("\nINTENSITY-BASED COMPARISON")
+    print("-" * 50)
+    intensity_comparison = compare_similar_intervals(intervals_df, 'intensity')
+    if not intensity_comparison.empty:
+        display_comparison_table(intensity_comparison, 'Intensity Groups')
+    else:
+        print("Insufficient intervals for intensity-based comparison.")
+    
+    # 3. Zone-based comparison
+    print("\nZONE-BASED COMPARISON")
+    print("-" * 50)
+    zone_comparison = compare_similar_intervals(intervals_df, 'zone')
+    if not zone_comparison.empty:
+        display_comparison_table(zone_comparison, 'Zone Groups')
+    else:
+        print("Insufficient intervals for zone-based comparison.")
+    
+    # 4. Source-based comparison
+    print("\nSOURCE-BASED COMPARISON")
+    print("-" * 50)
+    source_comparison = compare_similar_intervals(intervals_df, 'source')
+    if not source_comparison.empty:
+        display_comparison_table(source_comparison, 'Detection Sources')
+    else:
+        print("Insufficient intervals for source-based comparison.")
+    
+    # 5. Overall consistency summary
+    print("\nOVERALL CONSISTENCY SUMMARY")
+    print("-" * 50)
+    display_consistency_summary(intervals_df)
+
+
+def display_comparison_table(comparison_df, comparison_type):
+    """Display comparison table for a specific comparison type."""
+    if comparison_df.empty:
+        return
+    
+    print(f"\n{comparison_type} Analysis:")
+    
+    # Select key columns for display
+    display_cols = ['group_name', 'interval_count']
+    
+    # Add available metrics
+    if 'avg_power_cv' in comparison_df.columns:
+        display_cols.extend(['avg_power_mean', 'avg_power_cv'])
+    if 'duration_cv' in comparison_df.columns:
+        display_cols.extend(['duration_mean', 'duration_cv'])
+    if 'quality_score_cv' in comparison_df.columns:
+        display_cols.extend(['quality_score_mean', 'quality_score_cv'])
+    if 'avg_cadence_cv' in comparison_df.columns:
+        display_cols.extend(['avg_cadence_mean', 'avg_cadence_cv'])
+    
+    # Create display DataFrame
+    display_df = comparison_df[display_cols].copy()
+    
+    # Rename columns for better display
+    column_mapping = {
+        'group_name': 'Group',
+        'interval_count': 'Count',
+        'avg_power_mean': 'Avg Power (W)',
+        'avg_power_cv': 'Power CV (%)',
+        'duration_mean': 'Duration (s)',
+        'duration_cv': 'Duration CV (%)',
+        'quality_score_mean': 'Quality Score',
+        'quality_score_cv': 'Quality CV (%)',
+        'avg_cadence_mean': 'Avg Cadence (rpm)',
+        'avg_cadence_cv': 'Cadence CV (%)'
+    }
+    
+    display_df.columns = [column_mapping.get(col, col) for col in display_df.columns]
+    
+    # Format numeric columns
+    for col in display_df.columns:
+        if 'CV' in col:
+            display_df[col] = display_df[col].round(1)
+        elif 'Power' in col or 'Duration' in col or 'Quality' in col:
+            display_df[col] = display_df[col].round(0)
+        elif 'Cadence' in col:
+            display_df[col] = display_df[col].round(1)
+    
+    print(display_df.to_string(index=False))
+
+
+def display_consistency_summary(intervals_df):
+    """Display overall consistency summary."""
+    if intervals_df.empty:
+        return
+    
+    print("\nConsistency Analysis Summary:")
+    
+    # Calculate overall consistency metrics
+    consistency_metrics = []
+    
+    if 'avg_power' in intervals_df.columns:
+        power_cv = (intervals_df['avg_power'].std() / intervals_df['avg_power'].mean()) * 100 if intervals_df['avg_power'].mean() > 0 else 0
+        consistency_metrics.append(f"Power CV: {power_cv:.1f}%")
+    
+    if 'duration_s' in intervals_df.columns:
+        duration_cv = (intervals_df['duration_s'].std() / intervals_df['duration_s'].mean()) * 100 if intervals_df['duration_s'].mean() > 0 else 0
+        consistency_metrics.append(f"Duration CV: {duration_cv:.1f}%")
+    
+    if 'quality_score' in intervals_df.columns:
+        quality_cv = (intervals_df['quality_score'].std() / intervals_df['quality_score'].mean()) * 100 if intervals_df['quality_score'].mean() > 0 else 0
+        consistency_metrics.append(f"Quality Score CV: {quality_cv:.1f}%")
+    
+    if 'avg_cadence' in intervals_df.columns:
+        cadence_data = intervals_df['avg_cadence'].dropna()
+        if not cadence_data.empty:
+            cadence_cv = (cadence_data.std() / cadence_data.mean()) * 100 if cadence_data.mean() > 0 else 0
+            consistency_metrics.append(f"Cadence CV: {cadence_cv:.1f}%")
+    
+    # Display consistency metrics
+    for metric in consistency_metrics:
+        print(f"   • {metric}")
+    
+    # Consistency rating
+    if consistency_metrics:
+        avg_cv = np.mean([float(metric.split(': ')[1].replace('%', '')) for metric in consistency_metrics])
+        if avg_cv < 10:
+            rating = "Excellent consistency"
+        elif avg_cv < 20:
+            rating = "Good consistency"
+        elif avg_cv < 30:
+            rating = "Moderate consistency"
+        else:
+            rating = "Variable performance"
+        
+        print(f"\nOverall Rating: {rating} (Average CV: {avg_cv:.1f}%)")
+
+
+def create_comparison_table_html(comparison_df, comparison_type):
+    """Create HTML table for comparison data."""
+    try:
+        from dash import html
+    except ImportError:
+        return "HTML table not available (Dash not imported)"
+    
+    if comparison_df.empty:
+        return html.P("No comparison data available")
+    
+    # Select key columns for display
+    display_cols = ['group_name', 'interval_count']
+    
+    # Add available metrics
+    if 'avg_power_cv' in comparison_df.columns:
+        display_cols.extend(['avg_power_mean', 'avg_power_cv'])
+    if 'duration_cv' in comparison_df.columns:
+        display_cols.extend(['duration_mean', 'duration_cv'])
+    if 'quality_score_cv' in comparison_df.columns:
+        display_cols.extend(['quality_score_mean', 'quality_score_cv'])
+    if 'avg_cadence_cv' in comparison_df.columns:
+        display_cols.extend(['avg_cadence_mean', 'avg_cadence_cv'])
+    
+    # Create display DataFrame
+    display_df = comparison_df[display_cols].copy()
+    
+    # Rename columns for better display
+    column_mapping = {
+        'group_name': 'Group',
+        'interval_count': 'Count',
+        'avg_power_mean': 'Avg Power (W)',
+        'avg_power_cv': 'Power CV (%)',
+        'duration_mean': 'Duration (s)',
+        'duration_cv': 'Duration CV (%)',
+        'quality_score_mean': 'Quality Score',
+        'quality_score_cv': 'Quality CV (%)',
+        'avg_cadence_mean': 'Avg Cadence (rpm)',
+        'avg_cadence_cv': 'Cadence CV (%)'
+    }
+    
+    display_df.columns = [column_mapping.get(col, col) for col in display_df.columns]
+    
+    # Format numeric columns
+    for col in display_df.columns:
+        if 'CV' in col:
+            display_df[col] = display_df[col].round(1)
+        elif 'Power' in col or 'Duration' in col or 'Quality' in col:
+            display_df[col] = display_df[col].round(0)
+        elif 'Cadence' in col:
+            display_df[col] = display_df[col].round(1)
+    
+    # Create HTML table
+    table_data = []
+    for _, row in display_df.iterrows():
+        table_data.append(html.Tr([html.Td(str(row[col])) for col in display_df.columns]))
+    
+    return html.Table([
+        html.Thead(html.Tr([html.Th(col) for col in display_df.columns])),
+        html.Tbody(table_data)
+    ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse', 'marginBottom': '20px'})
+
+
+def create_consistency_summary_html(intervals_df):
+    """Create HTML consistency summary."""
+    try:
+        from dash import html
+    except ImportError:
+        return "HTML summary not available (Dash not imported)"
+    
+    if intervals_df.empty:
+        return html.P("No consistency data available")
+    
+    # Calculate overall consistency metrics
+    consistency_metrics = []
+    
+    if 'avg_power' in intervals_df.columns:
+        power_cv = (intervals_df['avg_power'].std() / intervals_df['avg_power'].mean()) * 100 if intervals_df['avg_power'].mean() > 0 else 0
+        consistency_metrics.append(f"Power CV: {power_cv:.1f}%")
+    
+    if 'duration_s' in intervals_df.columns:
+        duration_cv = (intervals_df['duration_s'].std() / intervals_df['duration_s'].mean()) * 100 if intervals_df['duration_s'].mean() > 0 else 0
+        consistency_metrics.append(f"Duration CV: {duration_cv:.1f}%")
+    
+    if 'quality_score' in intervals_df.columns:
+        quality_cv = (intervals_df['quality_score'].std() / intervals_df['quality_score'].mean()) * 100 if intervals_df['quality_score'].mean() > 0 else 0
+        consistency_metrics.append(f"Quality Score CV: {quality_cv:.1f}%")
+    
+    if 'avg_cadence' in intervals_df.columns:
+        cadence_data = intervals_df['avg_cadence'].dropna()
+        if not cadence_data.empty:
+            cadence_cv = (cadence_data.std() / cadence_data.mean()) * 100 if cadence_data.mean() > 0 else 0
+            consistency_metrics.append(f"Cadence CV: {cadence_cv:.1f}%")
+    
+    # Create HTML list
+    metric_items = [html.Li(metric) for metric in consistency_metrics]
+    
+    # Consistency rating
+    if consistency_metrics:
+        avg_cv = np.mean([float(metric.split(': ')[1].replace('%', '')) for metric in consistency_metrics])
+        if avg_cv < 10:
+            rating = "Excellent consistency"
+            rating_color = "#27ae60"
+        elif avg_cv < 20:
+            rating = "Good consistency"
+            rating_color = "#f39c12"
+        elif avg_cv < 30:
+            rating = "Moderate consistency"
+            rating_color = "#e67e22"
+        else:
+            rating = "Variable performance"
+            rating_color = "#e74c3c"
+        
+        rating_text = html.P(f"Overall Rating: {rating} (Average CV: {avg_cv:.1f}%)", 
+                           style={'color': rating_color, 'fontWeight': 'bold', 'marginTop': '10px'})
+    else:
+        rating_text = html.P("No consistency data available")
+    
+    return html.Div([
+        html.Ul(metric_items, style={'marginBottom': '20px'}),
+        rating_text
+    ])
 
 
 def extract_lap_intervals(df, ftp):
@@ -2154,6 +3434,181 @@ def classify_training_zone(intensity_factor):
         return "Zone 1 (Recovery)"
 
 
+def classify_power_zone(avg_power, ftp):
+    """Classify power zone based on FTP."""
+    if ftp <= 0:
+        return 'N/A'
+    
+    intensity = avg_power / ftp
+    if intensity < 0.55:
+        return 'Zone 1 (Active Recovery)'
+    elif intensity < 0.75:
+        return 'Zone 2 (Endurance)'
+    elif intensity < 0.90:
+        return 'Zone 3 (Tempo)'
+    elif intensity < 1.05:
+        return 'Zone 4 (Lactate Threshold)'
+    elif intensity < 1.20:
+        return 'Zone 5 (VO2 Max)'
+    elif intensity < 1.50:
+        return 'Zone 6 (Anaerobic Capacity)'
+    else:
+        return 'Zone 7 (Neuromuscular Power)'
+
+
+def classify_hr_zone(avg_hr, lthr):
+    """Classify heart rate zone based on LTHR."""
+    if np.isnan(avg_hr) or lthr <= 0:
+        return 'N/A'
+    
+    intensity = avg_hr / lthr
+    if intensity < 0.85:
+        return 'Zone 1 (Active Recovery)'
+    elif intensity < 0.95:
+        return 'Zone 2 (Endurance)'
+    elif intensity < 1.05:
+        return 'Zone 3 (Tempo)'
+    elif intensity < 1.15:
+        return 'Zone 4 (Lactate Threshold)'
+    else:
+        return 'Zone 5 (VO2 Max)'
+
+
+def calculate_sprint_efficiency(avg_power, max_power, power_fade, duration):
+    """Calculate sprint efficiency score for short intervals."""
+    if duration > 60 or max_power <= 0:
+        return np.nan
+    
+    # Base score starts at 100
+    efficiency_score = 100
+    
+    # Bonus for high average power relative to max (efficiency)
+    power_efficiency = avg_power / max_power if max_power > 0 else 0
+    if power_efficiency > 0.8:
+        efficiency_score += 20
+    elif power_efficiency > 0.7:
+        efficiency_score += 10
+    
+    # Bonus for short duration (sprint-like efforts)
+    if duration <= 30:
+        efficiency_score += 10
+    elif duration <= 45:
+        efficiency_score += 5
+    
+    # Ensure score stays within reasonable bounds
+    efficiency_score = max(0, min(150, efficiency_score))
+    return round(efficiency_score, 1)
+
+
+def calculate_mechanical_efficiency(work_kj, speed_gain_kph, duration):
+    """Calculate mechanical efficiency proxy (kJ per km/h gained)."""
+    if speed_gain_kph <= 0 or duration <= 0:
+        return np.nan
+    
+    # Convert speed gain to m/s for calculation
+    speed_gain_ms = speed_gain_kph / 3.6
+    
+    # Calculate distance covered (assuming constant acceleration)
+    # distance = 0.5 * acceleration * time^2
+    # acceleration = speed_gain / time
+    # distance = 0.5 * speed_gain * time
+    distance_km = 0.5 * speed_gain_ms * duration / 1000
+    
+    if distance_km <= 0:
+        return np.nan
+    
+    # Mechanical efficiency = work / distance
+    efficiency = work_kj / distance_km  # kJ/km
+    
+    return round(efficiency, 1)
+
+
+def calculate_power_consistency_score(power_cv, power_fade):
+    """Calculate power consistency score based on CV and fade."""
+    # Base score starts at 100
+    consistency_score = 100
+    
+    # Penalty for high CV (coefficient of variation)
+    if not np.isnan(power_cv):
+        cv_penalty = min(40, power_cv * 200)
+        consistency_score -= cv_penalty
+    
+    # Penalty for power fade
+    if not np.isnan(power_fade):
+        fade_penalty = min(30, abs(power_fade) * 100)
+        consistency_score -= fade_penalty
+    
+    # Ensure score stays within reasonable bounds
+    consistency_score = max(0, min(100, consistency_score))
+    return round(consistency_score, 1)
+
+
+def calculate_overall_performance_score(quality_score, avg_power, ftp, duration):
+    """Calculate overall performance score combining multiple factors."""
+    if ftp <= 0:
+        return quality_score
+    
+    # Base score from quality calculation
+    base_score = quality_score
+    
+    # Bonus for high power relative to FTP
+    power_bonus = min(20, (avg_power / ftp - 1) * 20) if avg_power > ftp else 0
+    
+    # Bonus for appropriate duration (not too short, not too long)
+    duration_bonus = 0
+    if 60 <= duration <= 600:  # 1-10 minutes
+        duration_bonus = 10
+    elif 30 <= duration <= 1200:  # 30 seconds to 20 minutes
+        duration_bonus = 5
+    
+    # Calculate overall score
+    overall_score = base_score + power_bonus + duration_bonus
+    
+    # Ensure score stays within reasonable bounds
+    overall_score = max(0, min(150, overall_score))
+    return round(overall_score, 1)
+
+
+def get_power_zone_number(avg_power, ftp):
+    """Get power zone number (1-7) based on FTP."""
+    if ftp <= 0:
+        return np.nan
+    
+    intensity = avg_power / ftp
+    if intensity < 0.55:
+        return 1
+    elif intensity < 0.75:
+        return 2
+    elif intensity < 0.90:
+        return 3
+    elif intensity < 1.05:
+        return 4
+    elif intensity < 1.20:
+        return 5
+    elif intensity < 1.50:
+        return 6
+    else:
+        return 7
+
+
+def get_hr_zone_number(avg_hr, lthr):
+    """Get heart rate zone number (1-5) based on LTHR."""
+    if np.isnan(avg_hr) or lthr <= 0:
+        return np.nan
+    
+    intensity = avg_hr / lthr
+    if intensity < 0.85:
+        return 1
+    elif intensity < 0.95:
+        return 2
+    elif intensity < 1.05:
+        return 3
+    elif intensity < 1.15:
+        return 4
+    else:
+        return 5
+
+
 def analyze_interval_evolution(df, interval_df, n_best=5):
     """Analyze how metrics evolve during the best intervals.
     
@@ -2321,8 +3776,8 @@ def create_interval_plots(df, interval_df, evolution_analysis):
     fig1.add_hline(y=FTP, line_dash="dash", line_color="red", 
                    annotation_text=f"FTP ({FTP}W)")
     
-    fig1.write_html("interval_power_comparison.html")
-    print("Interval power comparison saved to interval_power_comparison.html")
+    # fig1.write_html("interval_power_comparison.html")  # Removed file generation
+    # print("Interval power comparison saved to interval_power_comparison.html")  # Plots shown in dashboard instead
     
     # 2. Interval Evolution Over Time (for best intervals)
     if evolution_analysis:
@@ -2423,9 +3878,9 @@ def create_interval_plots(df, interval_df, evolution_analysis):
             
             fig2.update_layout(annotations=annotations)
             
-            filename = f"interval_evolution_{interval_name.replace(' ', '_').replace(':', '_')}.html"
-            fig2.write_html(filename)
-            print(f"Interval evolution plot saved to {filename}")
+            # filename = f"interval_evolution_{interval_name.replace(' ', '_').replace(':', '_')}.html"
+            # fig2.write_html(filename)  # Removed file generation
+            # print(f"Interval evolution plot saved to {filename}")  # Plots shown in dashboard instead
     
     # 3. Interval Duration vs Power Relationship
     fig3 = go.Figure()
@@ -2474,8 +3929,8 @@ def create_interval_plots(df, interval_df, evolution_analysis):
     fig3.add_hline(y=FTP, line_dash="dash", line_color="red", 
                    annotation_text=f"FTP ({FTP}W)")
     
-    fig3.write_html("interval_duration_vs_power.html")
-    print("Interval duration vs power plot saved to interval_duration_vs_power.html")
+    # fig3.write_html("interval_duration_vs_power.html")  # Removed file generation
+    # print("Interval duration vs power plot saved to interval_duration_vs_power.html")  # Plots shown in dashboard instead
     
     # 4. Metric Consistency Analysis
     if evolution_analysis:
@@ -2507,8 +3962,8 @@ def create_interval_plots(df, interval_df, evolution_analysis):
                 height=400
             )
             
-            fig4.write_html("interval_power_consistency.html")
-            print("Interval power consistency plot saved to interval_power_consistency.html")
+            # fig4.write_html("interval_power_consistency.html")  # Removed file generation
+            # print("Interval power consistency plot saved to interval_power_consistency.html")  # Plots shown in dashboard instead
     
     print("All interval plots created!")
 
@@ -2533,13 +3988,37 @@ def display_interval_analysis(interval_df, evolution_analysis):
     
     # Add available metrics
     if 'avg_cadence' in interval_df.columns:
-        display_cols.extend(['avg_cadence', 'max_cadence'])
+        display_cols.extend(['avg_cadence', 'max_cadence', 'min_cadence'])
     if 'avg_hr' in interval_df.columns:
         display_cols.extend(['avg_hr', 'max_hr'])
     if 'avg_torque' in interval_df.columns:
         display_cols.extend(['avg_torque', 'max_torque'])
     if 'avg_speed_kph' in interval_df.columns:
-        display_cols.extend(['avg_speed_kph', 'speed_gain_kph'])
+        display_cols.extend(['avg_speed_kph', 'max_speed_kph', 'speed_gain_kph'])
+    if 'power_cv' in interval_df.columns:
+        display_cols.extend(['power_cv', 'power_fade'])
+    if 'altitude_gain' in interval_df.columns:
+        display_cols.extend(['altitude_gain'])
+    if 'avg_grade' in interval_df.columns:
+        display_cols.extend(['avg_grade'])
+    if 'normalized_power' in interval_df.columns:
+        display_cols.extend(['normalized_power'])
+    if 'power_per_kg' in interval_df.columns:
+        display_cols.extend(['power_per_kg', 'np_per_kg'])
+    if 'power_zone' in interval_df.columns:
+        display_cols.extend(['power_zone'])
+    if 'hr_zone' in interval_df.columns:
+        display_cols.extend(['hr_zone'])
+    if 'sprint_efficiency' in interval_df.columns:
+        display_cols.extend(['sprint_efficiency'])
+    if 'mechanical_efficiency' in interval_df.columns:
+        display_cols.extend(['mechanical_efficiency'])
+    if 'power_consistency_score' in interval_df.columns:
+        display_cols.extend(['power_consistency_score'])
+    if 'overall_performance_score' in interval_df.columns:
+        display_cols.extend(['overall_performance_score'])
+    if 'power_to_weight_ratio' in interval_df.columns:
+        display_cols.extend(['power_to_weight_ratio', 'np_to_weight_ratio'])
     
     # Create display DataFrame
     display_df = interval_df[display_cols].copy()
@@ -2555,12 +4034,29 @@ def display_interval_analysis(interval_df, evolution_analysis):
         'intensity_factor': 'Intensity Factor',
         'avg_cadence': 'Avg Cadence (rpm)',
         'max_cadence': 'Max Cadence (rpm)',
+        'min_cadence': 'Min Cadence (rpm)',
         'avg_hr': 'Avg HR (bpm)',
         'max_hr': 'Max HR (bpm)',
         'avg_torque': 'Avg Torque (Nm)',
         'max_torque': 'Max Torque (Nm)',
         'avg_speed_kph': 'Avg Speed (km/h)',
-        'speed_gain_kph': 'Speed Gain (km/h)'
+        'max_speed_kph': 'Max Speed (km/h)',
+        'speed_gain_kph': 'Speed Gain (km/h)',
+        'power_cv': 'Power CV (%)',
+        'power_fade': 'Power Fade (%)',
+        'altitude_gain': 'Altitude Gain (m)',
+        'avg_grade': 'Avg Grade (%)',
+        'normalized_power': 'Normalized Power (W)',
+        'power_per_kg': 'Power (W/kg)',
+        'np_per_kg': 'NP (W/kg)',
+        'power_zone': 'Power Zone',
+        'hr_zone': 'HR Zone',
+        'sprint_efficiency': 'Sprint Efficiency',
+        'mechanical_efficiency': 'Mech. Efficiency (kJ/km)',
+        'power_consistency_score': 'Power Consistency',
+        'overall_performance_score': 'Overall Score',
+        'power_to_weight_ratio': 'Power (W/kg)',
+        'np_to_weight_ratio': 'NP (W/kg)'
     }
     
     display_df.columns = [column_mapping.get(col, col) for col in display_df.columns]
@@ -2574,6 +4070,24 @@ def display_interval_analysis(interval_df, evolution_analysis):
         elif 'Duration' in col:
             display_df[col] = display_df[col].round(1)
         elif 'Intensity' in col:
+            display_df[col] = display_df[col].round(2)
+        elif 'CV' in col or 'Fade' in col:
+            display_df[col] = display_df[col].round(2)
+        elif 'Altitude' in col:
+            display_df[col] = display_df[col].round(0)
+        elif 'Grade' in col:
+            display_df[col] = display_df[col].round(1)
+        elif 'Normalized Power' in col:
+            display_df[col] = display_df[col].round(0)
+        elif 'W/kg' in col:
+            display_df[col] = display_df[col].round(2)
+        elif 'Sprint Efficiency' in col:
+            display_df[col] = display_df[col].round(1)
+        elif 'Mech. Efficiency' in col:
+            display_df[col] = display_df[col].round(1)
+        elif 'Power Consistency' in col or 'Overall Score' in col:
+            display_df[col] = display_df[col].round(1)
+        elif 'W/kg' in col:
             display_df[col] = display_df[col].round(2)
     
     print(display_df.to_string(index=False))
@@ -3276,8 +4790,8 @@ def create_workout_overview_graph(df):
     fig.update_layout(annotations=annotations)
     
     # Save to HTML file
-    fig.write_html("workout_overview.html")
-    print("Workout overview graph saved to workout_overview.html")
+    # fig.write_html("workout_overview.html")  # Removed to prevent file creation
+    # print("Workout overview graph saved to workout_overview.html")  # Removed
     
     # Create a simplified version with just the main metrics (Power, HR, Cadence)
     fig_simple = go.Figure()
@@ -3340,15 +4854,15 @@ def create_workout_overview_graph(df):
         showlegend=True
     )
     
-    fig_simple.write_html("workout_overview_simple.html")
-    print("Simplified workout overview saved to workout_overview_simple.html")
+    # fig_simple.write_html("workout_overview_simple.html")  # Removed to prevent file creation
+    # print("Simplified workout overview saved to workout_overview_simple.html")  # Removed
 
 
 def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_intervals, evolution_analysis, interval_viz=None, interval_table=None):
     """Create a comprehensive Dash dashboard with all cycling analysis."""
     try:
         import dash
-        from dash import dcc, html, Input, Output, callback
+        from dash import dcc, html, Input, Output, State, callback
         import plotly.express as px
         import plotly.graph_objects as go
         from dash.exceptions import PreventUpdate
@@ -3358,8 +4872,88 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
     
     print("\nCreating Dash dashboard...")
     
+    # Calculate moving time (excluding stopped time)
+    def calculate_moving_time(df):
+        """Calculate actual moving time by filtering out stopped periods."""
+        # Get the time interval between data points (assuming regular sampling)
+        if len(df) > 1:
+            time_interval = (df.index[1] - df.index[0]).total_seconds()
+        else:
+            return 0
+        
+        if 'enhanced_speed' in df.columns:
+            # Consider moving when speed > 0.5 km/h (typical threshold for cycling)
+            moving_mask = df['enhanced_speed'] > 0.5
+            moving_count = moving_mask.sum()
+            moving_time_seconds = moving_count * time_interval
+            return moving_time_seconds / 3600  # Convert to hours
+        else:
+            # Fallback: use power data to estimate moving time
+            if 'power' in df.columns:
+                # Consider moving when power > 10W (typical threshold for cycling)
+                moving_mask = df['power'] > 10
+                moving_count = moving_mask.sum()
+                moving_time_seconds = moving_count * time_interval
+                return moving_time_seconds / 3600
+            else:
+                # Last resort: use total time
+                return (df.index[-1] - df.index[0]).total_seconds() / 3600
+    
     # Create Dash app
     app = dash.Dash(__name__, title="Cycling Analysis Dashboard")
+    
+    # Unit conversion functions
+    def convert_to_imperial(value, unit_type):
+        """Convert metric values to imperial units."""
+        if pd.isna(value) or value is None:
+            return value
+        
+        if unit_type == 'speed':
+            return value * 0.621371  # km/h to mph
+        elif unit_type == 'distance':
+            return value * 0.621371  # km to miles
+        else:
+            return value
+    
+    def format_metric(value, unit_type, is_imperial=False):
+        """Format metric values with appropriate units."""
+        if pd.isna(value) or value is None:
+            return "N/A"
+        
+        if is_imperial and unit_type in ['speed', 'distance']:
+            imperial_value = convert_to_imperial(value, unit_type)
+            if unit_type == 'speed':
+                return f"{imperial_value:.1f} mph"
+            elif unit_type == 'distance':
+                return f"{imperial_value:.2f} mi"
+        else:
+            # Keep metric for everything else
+            if unit_type == 'speed':
+                return f"{value:.1f} km/h"
+            elif unit_type == 'distance':
+                return f"{value:.2f} km"
+            elif unit_type == 'power_kg':
+                return f"{value:.2f} W/kg"
+            elif unit_type == 'torque':
+                return f"{value:.1f} Nm"
+            elif unit_type == 'work':
+                return f"{value:.1f} kJ"
+            else:
+                return f"{value:.1f}"
+        
+        # Fallback for non-converted values
+        if unit_type == 'speed':
+            return f"{value:.1f} km/h"
+        elif unit_type == 'distance':
+            return f"{value:.2f} km"
+        elif unit_type == 'power_kg':
+            return f"{value:.2f} W/kg"
+        elif unit_type == 'torque':
+            return f"{value:.1f} Nm"
+        elif unit_type == 'work':
+            return f"{value:.1f} kJ"
+        else:
+            return f"{value:.1f}"
     
     # Convert time to minutes for x-axis
     time_min = (df.index - df.index[0]).total_seconds() / 60
@@ -3370,13 +4964,15 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
         
         # Basic ride metrics
         total_time = (df.index[-1] - df.index[0]).total_seconds() / 3600  # hours
+        moving_time = calculate_moving_time(df)  # Use our new function
         total_distance = 0
         if 'enhanced_speed' in df.columns:
             total_distance = df['enhanced_speed'].sum() / 1000  # km
         
         metrics['total_time_hours'] = total_time
+        metrics['moving_time_hours'] = moving_time
         metrics['total_distance_km'] = total_distance
-        metrics['avg_speed_kph'] = total_distance / total_time if total_time > 0 else 0
+        metrics['avg_speed_kph'] = total_distance / moving_time if moving_time > 0 else 0  # Use moving time for speed
         
         # Power metrics
         if 'power' in df.columns:
@@ -3387,21 +4983,22 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
             metrics['power_std'] = power_data.std()
             metrics['total_work_kj'] = power_data.sum() / 1000
             
-            # Normalized Power (30s rolling average, then 95th percentile)
+            # Normalized Power (Coggan's formula: 30s rolling average, 4th power, mean, 4th root)
             if len(df) > 30:
                 rolling_30s = df['power'].rolling(30, min_periods=30).mean()
-                sorted_powers = rolling_30s.dropna().sort_values(ascending=False)
-                if len(sorted_powers) > 0:
-                    metrics['normalized_power'] = sorted_powers.iloc[int(len(sorted_powers) * 0.05)]
-                else:
-                    metrics['normalized_power'] = np.nan
+                # Apply 4th power transformation to penalize high-intensity efforts
+                power_4th = rolling_30s ** 4
+                # Take mean of 4th power values
+                mean_4th_power = power_4th.mean()
+                # Take 4th root to get back to watts
+                metrics['normalized_power'] = mean_4th_power ** (1/4)
             else:
                 metrics['normalized_power'] = np.nan
             
             # Intensity Factor and TSS
             if not np.isnan(metrics['normalized_power']):
                 metrics['intensity_factor'] = metrics['normalized_power'] / FTP
-                metrics['training_stress_score'] = (total_time * metrics['intensity_factor'] * metrics['intensity_factor'] * 100)
+                metrics['training_stress_score'] = (moving_time * metrics['intensity_factor'] * metrics['intensity_factor'] * 100)  # Use moving time for TSS
             else:
                 metrics['intensity_factor'] = np.nan
                 metrics['training_stress_score'] = np.nan
@@ -3803,6 +5400,48 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
         
         return fig
     
+    # Create interval table directly (no callback needed)
+    def create_interval_table_direct(units='metric'):
+        is_imperial = units == 'imperial'
+        
+        if long_intervals.empty:
+            return html.P("No interval data available")
+        
+        # Create interval table
+        table_data = []
+        for i, row in long_intervals.iterrows():
+            # Format duration: show seconds if < 1 min, otherwise show minutes
+            duration_s = row['duration_s']
+            if duration_s < 60:
+                duration_str = f"{duration_s:.0f}s"
+            else:
+                duration_str = f"{duration_s/60:.1f} min"
+            
+            # Keep work in kJ (metric)
+            work_kj = row['work_kj']
+            work_text = f"{work_kj:.1f} kJ"
+            
+            table_data.append(html.Tr([
+                html.Td(f"#{row['rank']}"),
+                html.Td(row['start_str']),
+                html.Td(duration_str),
+                html.Td(f"{row['avg_power']:.0f}W"),
+                html.Td(f"{row['max_power']:.0f}W"),
+                html.Td(work_text)
+            ]))
+        
+        return html.Table([
+            html.Thead(html.Tr([
+                html.Th("Rank"),
+                html.Th("Start Time"),
+                html.Th("Duration"),
+                html.Th("Avg Power (W)"),
+                html.Th("Max Power (W)"),
+                html.Th("Work (kJ)")
+            ])),
+            html.Tbody(table_data)
+        ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
+    
     # Create coggan power zones
     def create_power_zones():
         if 'power' not in df.columns:
@@ -3844,13 +5483,416 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
         
         return fig
     
+
+    
+    # Create timing comparison charts
+    def create_timing_comparison_charts(units='metric'):
+        """Create charts comparing timing metrics across intervals and sprints."""
+        is_imperial = units == 'imperial'
+        
+        if long_intervals.empty and micro_df.empty:
+            return go.Figure()
+        
+        # Create subplots for different timing comparisons
+        fig = go.Figure()
+        
+        # If we have intervals, create interval timing chart
+        if not long_intervals.empty:
+            # Get time to max power for each interval
+            interval_times = []
+            interval_names = []
+            
+            for i, row in long_intervals.iterrows():
+                start_time = row['start_time']
+                end_time = row['end_time']
+                interval_data = df.loc[start_time:end_time]
+                
+                if not interval_data.empty and 'power' in interval_data.columns:
+                    max_power_idx = interval_data['power'].idxmax()
+                    time_to_max = (max_power_idx - start_time).total_seconds()
+                    interval_times.append(time_to_max)
+                    interval_names.append(f"Interval {row['rank']}")
+            
+            if interval_times:
+                fig.add_trace(go.Bar(
+                    x=interval_names,
+                    y=interval_times,
+                    name='Time to Max Power',
+                    marker_color='#1f77b4',
+                    text=[f'{t:.1f}s' for t in interval_times],
+                    textposition='auto'
+                ))
+        
+        # If we have sprints, add sprint timing data
+        if not micro_df.empty:
+            sprint_names = [f"Sprint {i+1}" for i in range(len(micro_df))]
+            
+            # Power timing
+            if 'power_ttp_s' in micro_df.columns:
+                fig.add_trace(go.Bar(
+                    x=sprint_names,
+                    y=micro_df['power_ttp_s'],
+                    name='Sprint Power TTP',
+                    marker_color='#ff7f0e',
+                    text=[f'{t:.1f}s' if not np.isnan(t) else 'N/A' for t in micro_df['power_ttp_s']],
+                    textposition='auto'
+                ))
+        
+        fig.update_layout(
+            title='Timing Analysis: Time to Maximum Values',
+            xaxis_title='Intervals/Sprints',
+            yaxis_title='Time (seconds)',
+            template='plotly_white',
+            height=400,
+            barmode='group',
+            showlegend=True
+        )
+        
+        return fig
+    
+    # Create sustained power trend analysis
+    def create_sustained_power_trends():
+        """Create charts showing sustained power trends and decay curves."""
+        if long_intervals.empty:
+            return go.Figure()
+        
+        # Create subplots for different sustained power analyses
+        fig = go.Figure()
+        
+        # 1. Power decay curves for each interval
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+        
+        for i, row in long_intervals.iterrows():
+            start_time = row['start_time']
+            end_time = row['end_time']
+            interval_data = df.loc[start_time:end_time]
+            
+            if not interval_data.empty and 'power' in interval_data.columns:
+                # Calculate time from start for each data point
+                time_from_start = (interval_data.index - start_time).total_seconds()
+                
+                # Normalize power to percentage of max for this interval
+                max_power = interval_data['power'].max()
+                power_pct = (interval_data['power'] / max_power) * 100
+                
+                # Add power decay curve
+                fig.add_trace(go.Scatter(
+                    x=time_from_start,
+                    y=power_pct,
+                    mode='lines',
+                    name=f"Interval {row['rank']} ({row['duration_s']:.0f}s)",
+                    line=dict(color=colors[i % len(colors)], width=2),
+                    hovertemplate=f"Interval {row['rank']}<br>Time: %{{x:.1f}}s<br>Power: %{{y:.1f}}%<extra></extra>"
+                ))
+        
+        # Add reference lines for power thresholds
+        fig.add_hline(y=90, line_dash="dash", line_color="green", 
+                     annotation_text="90% of Max", annotation_position="right")
+        fig.add_hline(y=80, line_dash="dash", line_color="orange", 
+                     annotation_text="80% of Max", annotation_position="right")
+        fig.add_hline(y=70, line_dash="dash", line_color="red", 
+                     annotation_text="70% of Max", annotation_position="right")
+        
+        fig.update_layout(
+            title='Sustained Power Trends: Power Decay Curves',
+            xaxis_title='Time from Start (seconds)',
+            yaxis_title='Power (% of Max)',
+            template='plotly_white',
+            height=500,
+            showlegend=True,
+            hovermode='x unified'
+        )
+        
+        return fig
+    
+    # Create sustained power metrics table
+    def create_sustained_power_metrics():
+        """Create a table showing sustained power metrics for each interval."""
+        if long_intervals.empty:
+            return html.P("No interval data available for sustained power analysis")
+        
+        # Create table data
+        table_data = []
+        
+        for i, row in long_intervals.iterrows():
+            start_time = row['start_time']
+            end_time = row['end_time']
+            interval_data = df.loc[start_time:end_time]
+            
+            if not interval_data.empty and 'power' in interval_data.columns:
+                max_power = interval_data['power'].max()
+                avg_power = interval_data['power'].mean()
+                
+                # Calculate time above different power thresholds
+                time_above_90 = ((interval_data['power'] >= max_power * 0.9).sum() * 
+                                (interval_data.index[1] - interval_data.index[0]).total_seconds())
+                time_above_80 = ((interval_data['power'] >= max_power * 0.8).sum() * 
+                                (interval_data.index[1] - interval_data.index[0]).total_seconds())
+                time_above_70 = ((interval_data['power'] >= max_power * 0.7).sum() * 
+                                (interval_data.index[1] - interval_data.index[0]).total_seconds())
+                
+                # Calculate power consistency (coefficient of variation)
+                power_std = interval_data['power'].std()
+                power_cv = (power_std / avg_power) * 100 if avg_power > 0 else 0
+                
+                # Calculate pacing strategy
+                first_half = interval_data.iloc[:len(interval_data)//2]
+                second_half = interval_data.iloc[len(interval_data)//2:]
+                first_half_power = first_half['power'].mean()
+                second_half_power = second_half['power'].mean()
+                
+                if first_half_power > second_half_power * 1.1:
+                    pacing = "Front-loaded"
+                elif second_half_power > first_half_power * 1.1:
+                    pacing = "Negative split"
+                else:
+                    pacing = "Even pacing"
+                
+                # Calculate power fade percentage
+                power_fade = ((interval_data['power'].iloc[-5:].mean() - max_power) / max_power) * 100
+                
+                table_data.append(html.Tr([
+                    html.Td(f"Interval {row['rank']}"),
+                    html.Td(f"{row['duration_s']:.0f}s"),
+                    html.Td(f"{max_power:.0f}W"),
+                    html.Td(f"{avg_power:.0f}W"),
+                    html.Td(f"{time_above_90:.1f}s"),
+                    html.Td(f"{time_above_80:.1f}s"),
+                    html.Td(f"{time_above_70:.1f}s"),
+                    html.Td(f"{power_cv:.1f}%"),
+                    html.Td(pacing),
+                    html.Td(f"{power_fade:.1f}%")
+                ]))
+        
+        return html.Table([
+            html.Thead(html.Tr([
+                html.Th("Interval"),
+                html.Th("Duration"),
+                html.Th("Max Power"),
+                html.Th("Avg Power"),
+                html.Th("Time Above 90%"),
+                html.Th("Time Above 80%"),
+                html.Th("Time Above 70%"),
+                html.Th("Power CV"),
+                html.Th("Pacing Strategy"),
+                html.Th("Power Fade")
+            ])),
+            html.Tbody(table_data)
+        ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
+    
+    # Create power distribution analysis
+    def create_power_distribution_analysis():
+        """Create charts showing power distribution and consistency analysis."""
+        if long_intervals.empty:
+            return go.Figure()
+        
+        # Create subplots
+        from plotly.subplots import make_subplots
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('Power Distribution by Interval', 'Power Consistency (CV)', 
+                          'Sustained Power Ratios', 'Pacing Strategy Analysis'),
+            specs=[[{"type": "box"}, {"type": "bar"}],
+                   [{"type": "bar"}, {"type": "pie"}]]
+        )
+        
+        # 1. Power distribution box plots
+        for i, row in long_intervals.iterrows():
+            start_time = row['start_time']
+            end_time = row['end_time']
+            interval_data = df.loc[start_time:end_time]
+            
+            if not interval_data.empty and 'power' in interval_data.columns:
+                fig.add_trace(
+                    go.Box(
+                        y=interval_data['power'],
+                        name=f"Interval {row['rank']}",
+                        boxpoints='outliers',
+                        jitter=0.3,
+                        pointpos=-1.8
+                    ),
+                    row=1, col=1
+                )
+        
+        # 2. Power consistency (CV) bar chart
+        intervals = []
+        power_cvs = []
+        
+        for i, row in long_intervals.iterrows():
+            start_time = row['start_time']
+            end_time = row['end_time']
+            interval_data = df.loc[start_time:end_time]
+            
+            if not interval_data.empty and 'power' in interval_data.columns:
+                avg_power = interval_data['power'].mean()
+                power_std = interval_data['power'].std()
+                power_cv = (power_std / avg_power) * 100 if avg_power > 0 else 0
+                
+                intervals.append(f"Interval {row['rank']}")
+                power_cvs.append(power_cv)
+        
+        fig.add_trace(
+            go.Bar(
+                x=intervals,
+                y=power_cvs,
+                name='Power CV (%)',
+                marker_color='#ff7f0e'
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Sustained power ratios
+        intervals = []
+        sustained_ratios = []
+        
+        for i, row in long_intervals.iterrows():
+            start_time = row['start_time']
+            end_time = row['end_time']
+            interval_data = df.loc[start_time:end_time]
+            
+            if not interval_data.empty and 'power' in interval_data.columns:
+                max_power = interval_data['power'].max()
+                avg_power = interval_data['power'].mean()
+                sustained_ratio = (avg_power / max_power) * 100
+                
+                intervals.append(f"Interval {row['rank']}")
+                sustained_ratios.append(sustained_ratio)
+        
+        fig.add_trace(
+            go.Bar(
+                x=intervals,
+                y=sustained_ratios,
+                name='Sustained Power Ratio (%)',
+                marker_color='#2ca02c'
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Pacing strategy pie chart
+        pacing_counts = {'Front-loaded': 0, 'Even pacing': 0, 'Negative split': 0}
+        
+        for i, row in long_intervals.iterrows():
+            start_time = row['start_time']
+            end_time = row['end_time']
+            interval_data = df.loc[start_time:end_time]
+            
+            if not interval_data.empty and 'power' in interval_data.columns:
+                first_half = interval_data.iloc[:len(interval_data)//2]
+                second_half = interval_data.iloc[len(interval_data)//2:]
+                first_half_power = first_half['power'].mean()
+                second_half_power = second_half['power'].mean()
+                
+                if first_half_power > second_half_power * 1.1:
+                    pacing_counts['Front-loaded'] += 1
+                elif second_half_power > first_half_power * 1.1:
+                    pacing_counts['Negative split'] += 1
+                else:
+                    pacing_counts['Even pacing'] += 1
+        
+        fig.add_trace(
+            go.Pie(
+                labels=list(pacing_counts.keys()),
+                values=list(pacing_counts.values()),
+                name='Pacing Strategy'
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            title='Sustained Power Analysis Dashboard',
+            template='plotly_white',
+            height=800,
+            showlegend=False
+        )
+        
+        return fig
+    
+    # Create comprehensive timing analysis table
+    def create_timing_analysis_table():
+        """Create a comprehensive table showing all timing metrics."""
+        if long_intervals.empty and micro_df.empty:
+            return html.P("No timing data available")
+        
+        # Create table data
+        table_data = []
+        
+        # Add interval timing data
+        if not long_intervals.empty:
+            for i, row in long_intervals.iterrows():
+                start_time = row['start_time']
+                end_time = row['end_time']
+                interval_data = df.loc[start_time:end_time]
+                
+                # Calculate timing metrics
+                if not interval_data.empty:
+                    # Power timing
+                    if 'power' in interval_data.columns:
+                        max_power_idx = interval_data['power'].idxmax()
+                        time_to_max_power = (max_power_idx - start_time).total_seconds()
+                    else:
+                        time_to_max_power = np.nan
+                    
+                    # Torque timing
+                    if 'torque' in interval_data.columns:
+                        max_torque_idx = interval_data['torque'].idxmax()
+                        time_to_max_torque = (max_torque_idx - start_time).total_seconds()
+                    else:
+                        time_to_max_torque = np.nan
+                    
+                    # Cadence timing
+                    if 'cadence' in interval_data.columns:
+                        max_cadence_idx = interval_data['cadence'].idxmax()
+                        time_to_max_cadence = (max_cadence_idx - start_time).total_seconds()
+                    else:
+                        time_to_max_cadence = np.nan
+                    
+                    table_data.append(html.Tr([
+                        html.Td(f"Interval {row['rank']}"),
+                        html.Td(row['start_str']),
+                        html.Td(f"{time_to_max_power:.1f}s" if not np.isnan(time_to_max_power) else "N/A"),
+                        html.Td(f"{time_to_max_torque:.1f}s" if not np.isnan(time_to_max_torque) else "N/A"),
+                        html.Td(f"{time_to_max_cadence:.1f}s" if not np.isnan(time_to_max_cadence) else "N/A"),
+                        html.Td(f"{row['avg_power']:.0f}W"),
+                        html.Td(f"{row['max_power']:.0f}W")
+                    ]))
+        
+        # Add sprint timing data
+        if not micro_df.empty:
+            for i, row in micro_df.iterrows():
+                table_data.append(html.Tr([
+                    html.Td(f"Sprint {i+1}"),
+                    html.Td(row.get('start', 'N/A')),
+                    html.Td(f"{row.get('power_ttp_s', 'N/A'):.1f}s" if isinstance(row.get('power_ttp_s'), (int, float)) else row.get('power_ttp_s', 'N/A')),
+                    html.Td(f"{row.get('torque_ttp_s', 'N/A'):.1f}s" if isinstance(row.get('torque_ttp_s'), (int, float)) else row.get('torque_ttp_s', 'N/A')),
+                    html.Td(f"{row.get('cadence_ttp_s', 'N/A'):.1f}s" if isinstance(row.get('cadence_ttp_s'), (int, float)) else row.get('cadence_ttp_s', 'N/A')),
+                    html.Td(f"{row.get('power_max', 'N/A'):.0f}W" if isinstance(row.get('power_max'), (int, float)) else row.get('power_max', 'N/A')),
+                    html.Td(f"{row.get('power_max', 'N/A'):.0f}W" if isinstance(row.get('power_max'), (int, float)) else row.get('power_max', 'N/A'))
+                ]))
+        
+        return html.Table([
+            html.Thead(html.Tr([
+                html.Th("Type"),
+                html.Th("Start Time"),
+                html.Th("Time to Max Power"),
+                html.Th("Time to Max Torque"),
+                html.Th("Time to Max Cadence"),
+                html.Th("Avg Power"),
+                html.Th("Max Power")
+            ])),
+            html.Tbody(table_data)
+        ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
+    
     # Create comprehensive metrics table
-    def create_metrics_table():
+    def create_metrics_table(units='metric'):
+        is_imperial = units == 'imperial'
+        
         # Group metrics by category
         ride_metrics = [
             ('Total Time', f"{comprehensive_metrics.get('total_time_hours', 0):.2f} hours"),
-            ('Total Distance', f"{comprehensive_metrics.get('total_distance_km', 0):.1f} km"),
-            ('Average Speed', f"{comprehensive_metrics.get('avg_speed_kph', 0):.1f} km/h")
+            ('Moving Time', f"{comprehensive_metrics.get('moving_time_hours', 0):.2f} hours"),
+            ('Total Distance', format_metric(comprehensive_metrics.get('total_distance_km', 0), 'distance', is_imperial)),
+            ('Average Speed', format_metric(comprehensive_metrics.get('avg_speed_kph', 0), 'speed', is_imperial))
         ]
         
         power_metrics = [
@@ -3946,8 +5988,40 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
     
     # Dashboard layout
     app.layout = html.Div([
-        html.H1("Cycling Analysis Dashboard", 
-                style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': 30}),
+        # Header with title and info button
+        html.Div([
+            html.H1("Cycling Analysis Dashboard", 
+                    style={'textAlign': 'center', 'color': '#2c3e50', 'marginBottom': 0, 'flex': 1}),
+            html.Button(
+                "Metrics Guide",
+                id='open-metrics-guide',
+                style={
+                    'backgroundColor': '#3498db',
+                    'color': 'white',
+                    'border': 'none',
+                    'padding': '10px 20px',
+                    'borderRadius': '5px',
+                    'cursor': 'pointer',
+                    'fontSize': '16px',
+                    'marginLeft': '20px'
+                }
+            )
+        ], style={'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center', 'marginBottom': 30}),
+        
+        # Unit toggle button
+        html.Div([
+            html.H4("Units", style={'color': '#34495e', 'marginBottom': '10px'}),
+            dcc.RadioItems(
+                id='unit-toggle',
+                options=[
+                    {'label': 'Imperial (mph, mi)', 'value': 'imperial'},
+                    {'label': 'Metric (km/h, km)', 'value': 'metric'}
+                ],
+                value='metric',
+                inline=True,
+                style={'marginBottom': '20px'}
+            )
+        ], style={'textAlign': 'center', 'marginBottom': 20}),
         
         # Summary statistics
         html.Div([
@@ -3955,27 +6029,31 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
             html.Div([
                 html.Div([
                     html.H4("Duration"),
-                    html.P(f"{(df.index[-1] - df.index[0]).total_seconds() / 3600:.2f} hours")
-                ], style={'width': '25%', 'display': 'inline-block', 'textAlign': 'center'}),
+                    html.P(id='duration-display')
+                ], style={'width': '20%', 'display': 'inline-block', 'textAlign': 'center'}),
+                html.Div([
+                    html.H4("Total Time"),
+                    html.P(id='total-time-display')
+                ], style={'width': '20%', 'display': 'inline-block', 'textAlign': 'center'}),
                 html.Div([
                     html.H4("Avg Power"),
-                    html.P(f"{df['power'].mean():.0f}W ({df['power'].mean()/rider_mass_kg:.1f} W/kg)")
-                ], style={'width': '25%', 'display': 'inline-block', 'textAlign': 'center'}),
+                    html.P(id='avg-power-display')
+                ], style={'width': '20%', 'display': 'inline-block', 'textAlign': 'center'}),
                 html.Div([
                     html.H4("Max Power"),
-                    html.P(f"{df['power'].max():.0f}W ({df['power'].max()/rider_mass_kg:.1f} W/kg)")
-                ], style={'width': '25%', 'display': 'inline-block', 'textAlign': 'center'}),
+                    html.P(id='max-power-display')
+                ], style={'width': '20%', 'display': 'inline-block', 'textAlign': 'center'}),
                 html.Div([
                     html.H4("Total Work"),
-                    html.P(f"{df['power'].sum() / 1000:.1f} kJ")
-                ], style={'width': '25%', 'display': 'inline-block', 'textAlign': 'center'})
+                    html.P(id='total-work-display')
+                ], style={'width': '20%', 'display': 'inline-block', 'textAlign': 'center'})
             ], style={'backgroundColor': '#ecf0f1', 'padding': '20px', 'borderRadius': '10px'})
         ], style={'marginBottom': 30}),
         
         # Comprehensive metrics table
         html.Div([
             html.H3("Comprehensive Metrics (WKO5/TP Style)", style={'color': '#34495e'}),
-            create_metrics_table()
+            html.Div(id='comprehensive-metrics-table', children=create_metrics_table('metric'))
         ], style={'marginBottom': 30}),
         
         # Main workout overview
@@ -4010,6 +6088,18 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
             ])
         ], style={'marginBottom': 30}),
         
+        # Timing analysis section
+        html.Div([
+            html.H3("Timing Analysis", style={'color': '#34495e'}),
+            html.Div(id='timing-comparison', children=dcc.Graph(figure=create_timing_comparison_charts('metric'))),
+            html.Div([
+                html.H4("Comprehensive Timing Metrics", style={'color': '#34495e', 'marginTop': '20px'}),
+                html.Div(id='timing-analysis-table', children=create_timing_analysis_table())
+            ])
+        ], style={'marginBottom': 30}) if (not long_intervals.empty or not micro_df.empty) else html.Div(),
+        
+
+        
         # Interval analysis section
         html.Div([
             html.H3("Interval Analysis", style={'color': '#34495e'}),
@@ -4031,20 +6121,105 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
         # Interval data table
         html.Div([
             html.H3("Interval Data", style={'color': '#34495e'}),
-            html.Div(id='interval-table')
-        ])
+            html.Div(id='interval-table', children=create_interval_table_direct('metric'))
+        ], style={'marginBottom': 30}),
+        
+        # Interval evolution analysis section
+        html.Div([
+            html.H3("Interval Evolution Analysis", style={'color': '#34495e'}),
+            html.Div(id='interval-evolution-table')
+        ], style={'marginBottom': 30}) if evolution_analysis else html.Div(),
+        
+        # Interval comparison analysis section
+        html.Div([
+            html.H3("Interval Comparison Analysis", style={'color': '#34495e'}),
+            html.Div(id='interval-comparison-content'),
+            # Add comparison plots section
+            html.Div([
+                html.H4("Comparison Plots", style={'color': '#27ae60', 'marginTop': '20px'}),
+                html.Div(id='interval-comparison-plots')
+            ])
+        ], style={'marginBottom': 30}) if not long_intervals.empty else html.Div(),
+        
+        # Sprint timing analysis section
+        html.Div([
+            html.H3("Sprint Timing Analysis", style={'color': '#34495e'}),
+            html.Div(id='sprint-timing-table')
+        ], style={'marginBottom': 30}) if not micro_df.empty else html.Div(),
+        
+        # Metrics Guide Section (expandable)
+        html.Div([
+            html.Div([
+                html.Button(
+                    "Click to Show/Hide Metrics Guide",
+                    id='toggle-metrics-guide',
+                    style={
+                        'backgroundColor': '#3498db',
+                        'color': 'white',
+                        'border': 'none',
+                        'padding': '15px 30px',
+                        'borderRadius': '8px',
+                        'cursor': 'pointer',
+                        'fontSize': '18px',
+                        'width': '100%',
+                        'marginBottom': '20px'
+                    }
+                ),
+                html.Div(
+                    id='metrics-guide-content',
+                    style={'display': 'none'}
+                )
+            ])
+        ], style={'marginBottom': 30})
     ], style={'padding': '20px', 'backgroundColor': '#f8f9fa'})
+    
+    # Callbacks for unit conversion
+    @app.callback(
+        [Output('duration-display', 'children'),
+         Output('total-time-display', 'children'),
+         Output('avg-power-display', 'children'),
+         Output('max-power-display', 'children'),
+         Output('total-work-display', 'children')],
+        [Input('unit-toggle', 'value')]
+    )
+    def update_workout_summary_units(units):
+        is_imperial = units == 'imperial'
+        
+        # Duration (moving time)
+        moving_time = calculate_moving_time(df)
+        duration_text = f"{moving_time:.2f} hours (moving)"
+        
+        # Total time
+        total_time = (df.index[-1] - df.index[0]).total_seconds() / 3600
+        total_time_text = f"{total_time:.2f} hours"
+        
+        # Average power (keep W/kg metric)
+        avg_power = df['power'].mean()
+        avg_power_kg = avg_power / rider_mass_kg
+        avg_power_text = f"{avg_power:.0f}W ({avg_power_kg:.1f} W/kg)"
+        
+        # Max power (keep W/kg metric)
+        max_power = df['power'].max()
+        max_power_kg = max_power / rider_mass_kg
+        max_power_text = f"{max_power:.0f}W ({max_power_kg:.1f} W/kg)"
+        
+        # Total work (keep kJ metric)
+        total_work = df['power'].sum() / 1000
+        total_work_text = f"{total_work:.1f} kJ"
+        
+        return duration_text, total_time_text, avg_power_text, max_power_text, total_work_text
     
     # Callback to update sprint table
     @app.callback(
         Output('sprint-table', 'children'),
-        Input('workout-overview', 'clickData')
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
     )
-    def update_sprint_table(click_data):
+    def update_sprint_table(click_data, units):
         if best10.empty:
             return html.P("No sprint data available")
         
-        # Create sprint table
+        # Create sprint table (keep torque in Nm, power in W)
         table_data = []
         for i, row in best10.iterrows():
             table_data.append(html.Tr([
@@ -4066,24 +6241,141 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
             html.Tbody(table_data)
         ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
     
+    # Callback to update interval evolution table
+    @app.callback(
+        Output('interval-evolution-table', 'children'),
+        Input('workout-overview', 'clickData')
+    )
+    def update_interval_evolution_table(click_data):
+        if not evolution_analysis:
+            return html.P("No interval evolution data available")
+        
+        # Create interval evolution table
+        table_data = []
+        for interval_name, evolution in evolution_analysis.items():
+            table_data.append(html.Tr([
+                html.Td(interval_name.replace('_', ' ').title()),
+                html.Td(f"{evolution.get('power_fade_%', 'N/A'):.1f}%" if evolution.get('power_fade_%') is not None else 'N/A'),
+                html.Td(f"{evolution.get('power_consistency_%', 'N/A'):.1f}%" if evolution.get('power_consistency_%') is not None else 'N/A'),
+                html.Td(f"{evolution.get('cadence_drift_rpm', 'N/A'):.1f} rpm" if evolution.get('cadence_drift_rpm') is not None else 'N/A'),
+                html.Td(f"{evolution.get('hr_drift_bpm', 'N/A'):.1f} bpm" if evolution.get('hr_drift_bpm') is not None else 'N/A'),
+                html.Td(f"{evolution.get('torque_drift_nm', 'N/A'):.1f} Nm" if evolution.get('torque_drift_nm') is not None else 'N/A'),
+                html.Td(f"{evolution.get('speed_gain_kph', 'N/A'):.1f} km/h" if evolution.get('speed_gain_kph') is not None else 'N/A')
+            ]))
+        
+        return html.Table([
+            html.Thead(html.Tr([
+                html.Th("Interval"),
+                html.Th("Power Fade (%)"),
+                html.Th("Power Consistency (%)"),
+                html.Th("Cadence Drift (rpm)"),
+                html.Th("HR Drift (bpm)"),
+                html.Th("Torque Drift (Nm)"),
+                html.Th("Speed Gain (km/h)")
+            ])),
+            html.Tbody(table_data)
+        ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
+    
+    # Callback to update sprint timing table
+    @app.callback(
+        Output('sprint-timing-table', 'children'),
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
+    )
+    def update_sprint_timing_table(click_data, units):
+        if micro_df.empty:
+            return html.P("No sprint timing data available")
+        
+        is_imperial = units == 'imperial'
+        
+        # Create sprint timing table with enhanced metrics
+        table_data = []
+        for i, row in micro_df.iterrows():
+            # Get timing metrics
+            power_ttp = row.get('power_ttp_s', 'N/A')
+            torque_ttp = row.get('torque_ttp_s', 'N/A')
+            cadence_ttp = row.get('cadence_ttp_s', 'N/A')
+            
+            # Get acceleration rates
+            power_accel = row.get('power_acceleration_rate', 'N/A')
+            
+            # Get speed metrics
+            speed_ttp = row.get('speed_ttp_s', 'N/A')
+            speed_increase = row.get('speed_increase_kph', 'N/A')
+            max_speed = row.get('max_speed_kph', 'N/A')
+            sprint_type = row.get('sprint_type', 'N/A')
+            
+            # Get efficiency score
+            efficiency_score = row.get('sprint_efficiency_score', 'N/A')
+            
+            # Convert speed units if needed
+            if isinstance(speed_increase, (int, float)) and not pd.isna(speed_increase):
+                if is_imperial:
+                    speed_increase_text = f"{speed_increase * 0.621371:.1f} mph"
+                else:
+                    speed_increase_text = f"{speed_increase:.1f} km/h"
+            else:
+                speed_increase_text = speed_increase
+            
+            table_data.append(html.Tr([
+                html.Td(f"Sprint {i+1}"),
+                html.Td(f"{power_ttp:.2f}s" if isinstance(power_ttp, (int, float)) else power_ttp),
+                html.Td(f"{torque_ttp:.2f}s" if isinstance(torque_ttp, (int, float)) else torque_ttp),
+                html.Td(f"{cadence_ttp:.2f}s" if isinstance(cadence_ttp, (int, float)) else cadence_ttp),
+                html.Td(f"{speed_ttp:.2f}s" if isinstance(speed_ttp, (int, float)) else speed_ttp),
+                html.Td(f"{power_accel:.0f} W/s" if isinstance(power_accel, (int, float)) else power_accel),
+                html.Td(speed_increase_text),
+                html.Td(f"{efficiency_score}" if isinstance(efficiency_score, (int, float)) else efficiency_score)
+            ]))
+        
+        # Update header based on units
+        if is_imperial:
+            speed_header = "Speed Increase (mph)"
+        else:
+            speed_header = "Speed Increase (km/h)"
+        
+        return html.Table([
+            html.Thead(html.Tr([
+                html.Th("Sprint"),
+                html.Th("Time to Max Power"),
+                html.Th("Time to Max Torque"),
+                html.Th("Time to Max Cadence"),
+                html.Th("Time to Max Speed"),
+                html.Th("Power Acceleration"),
+                html.Th(speed_header),
+                html.Th("Efficiency Score")
+            ])),
+            html.Tbody(table_data)
+        ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
+    
     # Callback to update interval table
     @app.callback(
         Output('interval-table', 'children'),
-        Input('interval-comparison', 'clickData')
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
     )
-    def update_interval_table(click_data):
+    def update_interval_table(click_data, units):
         if long_intervals.empty:
             return html.P("No interval data available")
+        
+        is_imperial = units == 'imperial'
         
         # Create interval table
         table_data = []
         for i, row in long_intervals.iterrows():
             # Format duration: show seconds if < 1 min, otherwise show minutes
-            duration_min = row['duration_min']
-            if duration_min < 1.0:
-                duration_str = f"{row['duration_s']:.0f}s"
+            duration_s = row['duration_s']
+            if duration_s < 60:
+                duration_str = f"{duration_s:.0f}s"
             else:
-                duration_str = f"{duration_min:.1f} min"
+                duration_str = f"{duration_s/60:.1f} min"
+            
+            # Convert work units if needed
+            work_kj = row['work_kj']
+            if is_imperial:
+                work_text = f"{work_kj * 0.737562:.0f} ft-lb"
+            else:
+                work_text = f"{work_kj:.1f} kJ"
             
             table_data.append(html.Tr([
                 html.Td(f"#{row['rank']}"),
@@ -4091,25 +6383,382 @@ def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_interval
                 html.Td(duration_str),
                 html.Td(f"{row['avg_power']:.0f}W"),
                 html.Td(f"{row['max_power']:.0f}W"),
-                html.Td(f"{row['work_kj']:.1f} kJ")
+                html.Td(work_text)
             ]))
+        
+        # Update header based on units
+        if is_imperial:
+            work_header = "Work (ft-lb)"
+        else:
+            work_header = "Work (kJ)"
         
         return html.Table([
             html.Thead(html.Tr([
-                html.Th("Rank"),
-                html.Th("Start Time"),
-                html.Th("Duration"),
-                html.Th("Avg Power (W)"),
-                html.Th("Max Power (W)"),
-                html.Th("Work (kJ)")
+                html.Td("Rank"),
+                html.Td("Start Time"),
+                html.Td("Duration"),
+                html.Td("Avg Power (W)"),
+                html.Td("Max Power (W)"),
+                html.Td(work_header)
             ])),
             html.Tbody(table_data)
         ], style={'width': '100%', 'border': '1px solid #ddd', 'borderCollapse': 'collapse'})
     
+    # Callback to update comprehensive metrics table
+    @app.callback(
+        Output('comprehensive-metrics-table', 'children'),
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
+    )
+    def update_comprehensive_metrics_table(click_data, units):
+        return create_metrics_table(units)
+    
+    # Callback to update timing comparison charts
+    @app.callback(
+        Output('timing-comparison', 'children'),
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
+    )
+    def update_timing_comparison_charts(click_data, units):
+        return dcc.Graph(figure=create_timing_comparison_charts(units))
+    
+    # Callback to update interval comparison content
+    @app.callback(
+        Output('interval-comparison-content', 'children'),
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
+    )
+    def update_interval_comparison_content(click_data, units):
+        if long_intervals.empty:
+            return html.P("No interval data available for comparison")
+        
+        # Create comparison content
+        comparison_content = []
+        
+        # 1. Duration-based comparison
+        duration_comparison = compare_similar_intervals(long_intervals, 'duration')
+        if not duration_comparison.empty:
+            comparison_content.append(html.H4("Duration-Based Comparison", style={'color': '#27ae60'}))
+            comparison_content.append(create_comparison_table_html(duration_comparison, 'Duration Groups'))
+            comparison_content.append(html.Hr())
+        
+        # 2. Intensity-based comparison
+        intensity_comparison = compare_similar_intervals(long_intervals, 'intensity')
+        if not intensity_comparison.empty:
+            comparison_content.append(html.H4("Intensity-Based Comparison", style={'color': '#e74c3c'}))
+            comparison_content.append(create_comparison_table_html(intensity_comparison, 'Intensity Groups'))
+            comparison_content.append(html.Hr())
+        
+        # 3. Zone-based comparison
+        zone_comparison = compare_similar_intervals(long_intervals, 'zone')
+        if not zone_comparison.empty:
+            comparison_content.append(html.H4("Zone-Based Comparison", style={'color': '#9b59b6'}))
+            comparison_content.append(create_comparison_table_html(zone_comparison, 'Zone Groups'))
+            comparison_content.append(html.Hr())
+        
+        # 4. Source-based comparison
+        source_comparison = compare_similar_intervals(long_intervals, 'source')
+        if not source_comparison.empty:
+            comparison_content.append(html.H4("Source-Based Comparison", style={'color': '#f39c12'}))
+            comparison_content.append(create_comparison_table_html(source_comparison, 'Detection Sources'))
+            comparison_content.append(html.Hr())
+        
+        # 5. Overall consistency summary
+        comparison_content.append(html.H4("Overall Consistency Summary", style={'color': '#34495e'}))
+        consistency_summary = create_consistency_summary_html(long_intervals)
+        comparison_content.append(consistency_summary)
+        
+        return html.Div(comparison_content)
+    
+    # Callback to update interval comparison plots
+    @app.callback(
+        Output('interval-comparison-plots', 'children'),
+        [Input('workout-overview', 'clickData'),
+         Input('unit-toggle', 'value')]
+    )
+    def update_interval_comparison_plots(click_data, units):
+        if long_intervals.empty:
+            return html.P("No interval data available for comparison plots")
+        
+        # Create comparison plots
+        comparison_plots = create_interval_comparison_plots(long_intervals)
+        if not comparison_plots:
+            return html.P("No comparison plots could be created (insufficient data)")
+        
+        # Create plot components in a grid layout
+        plot_components = []
+        plot_titles = [
+            "Duration-Based Consistency",
+            "Intensity-Based Consistency", 
+            "Zone-Based Consistency",
+            "Source-Based Consistency",
+            "Overall Consistency Analysis"
+        ]
+        
+        # Create plots in rows of 2
+        for i in range(0, len(comparison_plots), 2):
+            row_plots = []
+            for j in range(2):
+                if i + j < len(comparison_plots):
+                    plot_idx = i + j
+                    plot = comparison_plots[plot_idx]
+                    title = plot_titles[plot_idx]
+                    
+                    row_plots.append(html.Div([
+                        html.H5(title, style={'color': '#34495e', 'marginBottom': '10px', 'fontSize': '14px'}),
+                        dcc.Graph(
+                            id=f'comparison-plot-{plot_idx}',
+                            figure=plot,
+                            style={'height': '300px', 'marginBottom': '15px'}
+                        )
+                    ], style={'width': '48%', 'display': 'inline-block', 'margin': '1%'}))
+            
+            plot_components.append(html.Div(row_plots, style={'marginBottom': '20px'}))
+        
+        return html.Div(plot_components)
+    
+    # Callback to toggle metrics guide
+    @app.callback(
+        Output('metrics-guide-content', 'children'),
+        Output('metrics-guide-content', 'style'),
+        Input('toggle-metrics-guide', 'n_clicks'),
+        State('metrics-guide-content', 'style')
+    )
+    def toggle_metrics_guide(n_clicks, current_style):
+        if n_clicks is None:
+            return [], {'display': 'none'}
+        
+        if current_style.get('display') == 'none':
+            # Show the guide
+            guide_content = [
+                html.Div([
+                    html.H2("Cycling Metrics Guide", 
+                            style={'color': '#2c3e50', 'marginBottom': '20px', 'textAlign': 'center'}),
+                    
+                    # Power Metrics Section
+                    html.Div([
+                        html.H3("POWER METRICS", style={'color': '#e74c3c', 'borderBottom': '2px solid #e74c3c', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Average Power"),
+                            html.P("Your sustained power output throughout the ride. Key indicator of overall effort and fitness level."),
+                            html.H4("Normalized Power (NP)"),
+                            html.P("Weighted average power that accounts for the physiological cost of variable power output. More accurate than simple average for training stress."),
+                            html.H4("Max Power"),
+                            html.P("Peak power output. Useful for understanding your sprint capabilities and power ceiling."),
+                            html.H4("Power-to-Weight Ratio (W/kg)"),
+                            html.P("Power relative to body weight. Critical for climbing performance and comparing riders of different sizes."),
+                            html.H4("Intensity Factor (IF)"),
+                            html.P("Normalized Power divided by FTP. Values >1.0 indicate high-intensity efforts, >1.05 suggest race-like intensity."),
+                            html.H4("Training Stress Score (TSS)"),
+                            html.P("Cumulative training load measure. 100 TSS = 1 hour at FTP. Useful for tracking weekly/monthly training volume.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Timing Metrics Section
+                    html.Div([
+                        html.H3("TIMING METRICS", style={'color': '#3498db', 'borderBottom': '2px solid #3498db', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Time to Max Power (TTP)"),
+                            html.P("How quickly you reach peak power. Lower values indicate explosive sprint ability and neuromuscular efficiency."),
+                            html.H4("Time to Max Torque"),
+                            html.P("Speed of torque development. Important for sprint starts and acceleration from low speeds."),
+                            html.H4("Time to Max Cadence"),
+                            html.P("How fast you reach optimal pedaling rhythm. Reflects coordination and technique efficiency."),
+                            html.H4("Time to Max Speed"),
+                            html.P("Acceleration rate to top speed. Key for sprint performance and race tactics.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Sprint Metrics Section
+                    html.Div([
+                        html.H3("SPRINT METRICS", style={'color': '#f39c12', 'borderBottom': '2px solid #f39c12', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Power Acceleration Rate"),
+                            html.P("Rate of power increase (W/s). Higher values indicate explosive sprint ability and fast-twitch fiber recruitment."),
+                            html.H4("Speed Increase"),
+                            html.P("Velocity gain during sprint. Important for understanding sprint effectiveness and aerodynamic efficiency."),
+                            html.H4("Sprint Efficiency Score"),
+                            html.P("Combined metric of power development, maintenance, and fade. Higher scores indicate better sprint technique."),
+                            html.H4("Power Fade"),
+                            html.P("Percentage drop in power during sprint. Lower fade suggests better anaerobic capacity and pacing."),
+                            html.H4("Sprint Consistency (CV)"),
+                            html.P("Coefficient of variation across multiple sprints. Lower values indicate more repeatable sprint performance.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Interval Metrics Section
+                    html.Div([
+                        html.H3("INTERVAL METRICS", style={'color': '#27ae60', 'borderBottom': '2px solid #27ae60', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Interval Power"),
+                            html.P("Sustained power during structured efforts. Key for VO2 max and threshold training assessment."),
+                            html.H4("Power Consistency"),
+                            html.P("Standard deviation of power during intervals. Lower values indicate better pacing and endurance."),
+                            html.H4("Power Fade"),
+                            html.P("Power decline during intervals. Important for understanding fatigue resistance and training zone adherence."),
+                            html.H4("Interval Work Percentage"),
+                            html.P("Proportion of total ride spent in interval efforts. Useful for training load management."),
+                            html.H4("Power CV (%)"),
+                            html.P("Coefficient of variation in power output. Lower values indicate more consistent power delivery."),
+                            html.H4("Normalized Power"),
+                            html.P("30-second rolling average power for efforts ≥30s. More physiologically relevant than simple average."),
+                            html.H4("Power Zone"),
+                            html.P("Training zone classification based on FTP percentage. Helps categorize effort intensity."),
+                            html.H4("HR Zone"),
+                            html.P("Heart rate zone classification based on LTHR. Essential for understanding cardiovascular stress."),
+                            html.H4("Sprint Efficiency"),
+                            html.P("Performance score for short intervals (≤60s). Combines power development, maintenance, and technique."),
+                            html.H4("Mechanical Efficiency (kJ/km)"),
+                            html.P("Energy cost per distance gained. Lower values indicate more efficient power transfer to forward motion."),
+                            html.H4("Power Consistency Score"),
+                            html.P("Combined metric of power stability and fade resistance. Higher scores indicate better pacing."),
+                            html.H4("Overall Performance Score"),
+                            html.P("Comprehensive rating combining quality, power, and duration factors. Higher scores indicate better overall performance.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Physiological Metrics Section
+                    html.Div([
+                        html.H3("PHYSIOLOGICAL METRICS", style={'color': '#e91e63', 'borderBottom': '2px solid #e91e63', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Heart Rate Zones"),
+                            html.P("Time spent in different HR zones based on LTHR. Essential for understanding training intensity distribution."),
+                            html.H4("Cadence Analysis"),
+                            html.P("Pedaling rhythm patterns. Optimal cadence varies by rider but typically 80-100 rpm for endurance."),
+                            html.H4("Torque Analysis"),
+                            html.P("Force application patterns. Important for understanding pedaling technique and efficiency."),
+                            html.H4("Work (kJ)"),
+                            html.P("Total energy output. Useful for comparing ride intensity and caloric expenditure.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Enhanced Cadence & Speed Metrics Section
+                    html.Div([
+                        html.H3("ENHANCED CADENCE & SPEED METRICS", style={'color': '#16a085', 'borderBottom': '2px solid #16a085', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Average Cadence"),
+                            html.P("Mean pedaling rate during intervals. Key for understanding pedaling efficiency and technique."),
+                            html.H4("Max Cadence"),
+                            html.P("Peak pedaling rate. Important for sprint performance and neuromuscular coordination."),
+                            html.H4("Min Cadence"),
+                            html.P("Lowest pedaling rate. Can indicate fatigue or technique breakdown."),
+                            html.H4("Cadence Drift"),
+                            html.P("Change in cadence over time. Positive values suggest maintaining rhythm, negative values indicate fatigue."),
+                            html.H4("Average Speed (km/h)"),
+                            html.P("Mean forward velocity. Essential for understanding interval effectiveness and terrain impact."),
+                            html.H4("Max Speed (km/h)"),
+                            html.P("Peak velocity achieved. Important for sprint and acceleration analysis."),
+                            html.H4("Speed Gain (km/h)"),
+                            html.P("Velocity increase during interval. Key metric for acceleration and sprint performance."),
+                            html.H4("Speed Acceleration Rate"),
+                            html.P("Rate of speed increase (km/h per second). Higher values indicate better acceleration ability.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Training Zones Section
+                    html.Div([
+                        html.H3("TRAINING ZONES", style={'color': '#9b59b6', 'borderBottom': '2px solid #9b59b6', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Zone 1 (Active Recovery)"),
+                            html.P("55-75% FTP. Promotes recovery and builds aerobic base."),
+                            html.H4("Zone 2 (Endurance)"),
+                            html.P("75-90% FTP. Builds aerobic capacity and fat utilization."),
+                            html.H4("Zone 3 (Tempo)"),
+                            html.P("90-105% FTP. Improves lactate threshold and sustainable power."),
+                            html.H4("Zone 4 (Lactate Threshold)"),
+                            html.P("105-120% FTP. Raises anaerobic threshold and race pace."),
+                            html.H4("Zone 5 (VO2 Max)"),
+                            html.P("120-150% FTP. Improves maximum oxygen consumption."),
+                            html.H4("Zone 6 (Anaerobic)"),
+                            html.P("150%+ FTP. Develops sprint power and anaerobic capacity.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Power-to-Weight & Performance Metrics Section
+                    html.Div([
+                        html.H3("POWER-TO-WEIGHT & PERFORMANCE METRICS", style={'color': '#e67e22', 'borderBottom': '2px solid #e67e22', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Power (W/kg)"),
+                            html.P("Power output relative to body weight. Critical for climbing performance and comparing riders of different sizes."),
+                            html.H4("NP (W/kg)"),
+                            html.P("Normalized power per kilogram. More accurate than simple power-to-weight for training stress assessment."),
+                            html.H4("Work per Minute (kJ/min)"),
+                            html.P("Energy output rate. Useful for understanding interval intensity and training load."),
+                            html.H4("Altitude Gain (m)"),
+                            html.P("Vertical elevation change during interval. Important for understanding climbing performance and terrain impact."),
+                            html.H4("Average Grade (%)"),
+                            html.P("Mean slope gradient. Essential for interpreting power data in context of terrain difficulty."),
+                            html.H4("Torque Stability"),
+                            html.P("Consistency of force application. Higher values indicate more stable pedaling technique."),
+                            html.H4("Quality Score"),
+                            html.P("Overall interval quality rating. Combines power, consistency, duration, and technique factors.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    # Zone Numbering System Section
+                    html.Div([
+                        html.H3("ZONE NUMBERING SYSTEM", style={'color': '#8e44ad', 'borderBottom': '2px solid #8e44ad', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Power Zone Numbers (1-7)"),
+                            html.P("1: Active Recovery (0-55% FTP), 2: Endurance (55-75% FTP), 3: Tempo (75-90% FTP), 4: Threshold (90-105% FTP), 5: VO2 Max (105-120% FTP), 6: Anaerobic (120-150% FTP), 7: Neuromuscular (150%+ FTP)"),
+                            html.H4("HR Zone Numbers (1-5)"),
+                            html.P("1: Active Recovery (0-85% LTHR), 2: Endurance (85-95% LTHR), 3: Tempo (95-105% LTHR), 4: Threshold (105-115% LTHR), 5: VO2 Max (115%+ LTHR)"),
+                            html.H4("Zone Classification"),
+                            html.P("Automatic categorization of intervals into appropriate training zones based on power and heart rate data.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    html.Hr(style={'margin': '30px 0'}),
+                    
+                    # Scoring Systems Section
+                    html.Div([
+                        html.H3("SCORING SYSTEMS", style={'color': '#c0392b', 'borderBottom': '2px solid #c0392b', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("Sprint Efficiency Score (0-150)"),
+                            html.P("100 = baseline performance. +20 for high power efficiency (>80% avg/max), +10 for very short duration (≤30s), +5 for short duration (≤45s). Penalties for excessive power fade."),
+                            html.H4("Power Consistency Score (0-100)"),
+                            html.P("100 = perfect consistency. Penalties for high power variation (CV) and power fade. Lower scores indicate less stable power output."),
+                            html.H4("Overall Performance Score (0-150)"),
+                            html.P("Combines quality score with power bonuses and duration bonuses. Higher scores indicate better overall interval performance."),
+                            html.H4("Quality Score"),
+                            html.P("Weighted combination of power, duration, consistency, fade, cadence, torque, and work factors. Higher scores indicate better interval quality.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                    html.Hr(style={'margin': '30px 0'}),
+                    html.P("Tip: Use these metrics to track progress, identify weaknesses, and optimize your training program.", 
+                           style={'textAlign': 'center', 'fontStyle': 'italic', 'color': '#666'}),
+                    
+                    # Data Sources & Detection Methods Section
+                    html.Div([
+                        html.H3("DATA SOURCES & DETECTION METHODS", style={'color': '#2c3e50', 'borderBottom': '2px solid #2c3e50', 'paddingBottom': '5px'}),
+                        html.Div([
+                            html.H4("ML-Enhanced Detection"),
+                            html.P("Uses trained machine learning models to identify intervals with high accuracy and confidence scores."),
+                            html.H4("Lap-Based Detection"),
+                            html.P("Extracts intervals from manual lap markers in your cycling computer data."),
+                            html.H4("Auto-Detection"),
+                            html.P("Algorithmic detection using power thresholds, duration filters, and quality scoring."),
+                            html.H4("Fallback Detection"),
+                            html.P("Sensitive detection method when other methods find insufficient intervals."),
+                            html.H4("Source Classification"),
+                            html.P("Each interval is tagged with its detection method for transparency and analysis.")
+                        ], style={'marginLeft': '20px', 'marginBottom': '20px'})
+                    ]),
+                    
+                ], style={'backgroundColor': 'white', 'padding': '30px', 'borderRadius': '10px', 'border': '2px solid #ecf0f1'})
+            ]
+            return guide_content, {'display': 'block'}
+        else:
+            # Hide the guide
+            return [], {'display': 'none'}
+    
+
+    
     # Run the app
     print("Starting Dash dashboard...")
-    print("Open your browser and go to: http://127.0.0.1:8050")
-    app.run(debug=False, host='127.0.0.1', port=8050)
+    print("Open your browser and go to: http://127.0.0.1:8052")
+    app.run(debug=False, host='127.0.0.1', port=8052)
 
 
 def create_enhanced_interval_visualization(df, intervals_df, ftp=330):
@@ -4363,6 +7012,12 @@ if __name__ == "__main__":
         print("\n=== Sprint Summary ===")
         sprint_summary_df = pd.DataFrame(sprint_summaries)
         print(sprint_summary_df.round(2))
+        
+        # Display enhanced sprint analysis
+        display_enhanced_sprint_metrics(micro_metrics)
+        
+        # Analyze sprint technique patterns across sprints
+        analyze_sprint_technique_patterns(micro_metrics)
     
     # Find intervals using ML-based detection system
     print(f"\n🤖 ML-Based Interval Detection:")
@@ -4408,6 +7063,81 @@ if __name__ == "__main__":
             print(f"Speed Gain: {evolution['speed_gain_kph']:.1f} km/h")
     else:
         print("\nNo interval evolution data to analyze.")
+    
+    # Analyze interval comparisons and consistency
+    if not long_intervals.empty:
+        print("\n=== Interval Comparison Analysis ===")
+        display_interval_comparison_analysis(long_intervals)
+        
+        # Create comparison plots for dashboard
+        print("\n=== Creating Interval Comparison Plots for Dashboard ===")
+        comparison_plots = create_interval_comparison_plots(long_intervals)
+        if comparison_plots:
+            print(f"Created {len(comparison_plots)} comparison plots for dashboard integration")
+            print("   Plots will be displayed in the Interval Comparison Analysis section")
+        else:
+            print("No comparison plots could be created (insufficient data)")
+        
+        # Demonstrate specific comparisons
+        print("\n=== Specific Interval Comparisons ===")
+        
+        # Compare intervals by duration
+        print("\n1. Comparing intervals by duration:")
+        duration_comparison = compare_similar_intervals(long_intervals, 'duration')
+        if not duration_comparison.empty:
+            print("   Duration-based groups found:")
+            for _, group in duration_comparison.iterrows():
+                print(f"   • {group['group_name']}: {group['interval_count']} intervals")
+                if 'avg_power_cv' in group:
+                    print(f"     Power CV: {group['avg_power_cv']:.1f}%")
+                if 'duration_cv' in group:
+                    print(f"     Duration CV: {group['duration_cv']:.1f}%")
+        else:
+            print("   No duration-based groups with sufficient intervals")
+        
+        # Compare intervals by intensity
+        print("\n2. Comparing intervals by intensity:")
+        intensity_comparison = compare_similar_intervals(long_intervals, 'intensity')
+        if not intensity_comparison.empty:
+            print("   Intensity-based groups found:")
+            for _, group in intensity_comparison.iterrows():
+                print(f"   • {group['group_name']}: {group['interval_count']} intervals")
+                if 'avg_power_cv' in group:
+                    print(f"     Power CV: {group['avg_power_cv']:.1f}%")
+                if 'quality_score_cv' in group:
+                    print(f"     Quality Score CV: {group['quality_score_cv']:.1f}%")
+        else:
+            print("   No intensity-based groups with sufficient intervals")
+        
+        # Compare intervals by power zone
+        print("\n3. Comparing intervals by power zone:")
+        zone_comparison = compare_similar_intervals(long_intervals, 'zone')
+        if not zone_comparison.empty:
+            print("   Zone-based groups found:")
+            for _, group in zone_comparison.iterrows():
+                print(f"   • {group['group_name']}: {group['interval_count']} intervals")
+                if 'avg_power_cv' in group:
+                    print(f"     Power CV: {group['avg_power_cv']:.1f}%")
+                if 'avg_cadence_cv' in group:
+                    print(f"     Cadence CV: {group['avg_cadence_cv']:.1f}%")
+        else:
+            print("   No zone-based groups with sufficient intervals")
+        
+        # Compare intervals by detection source
+        print("\n4. Comparing intervals by detection source:")
+        source_comparison = compare_similar_intervals(long_intervals, 'source')
+        if not source_comparison.empty:
+            print("   Source-based groups found:")
+            for _, group in source_comparison.iterrows():
+                print(f"   • {group['group_name']}: {group['interval_count']} intervals")
+                if 'avg_power_cv' in group:
+                    print(f"     Power CV: {group['avg_power_cv']:.1f}%")
+                if 'quality_score_cv' in group:
+                    print(f"     Quality Score CV: {group['quality_score_cv']:.1f}%")
+        else:
+            print("   No source-based groups with sufficient intervals")
+    else:
+        print("\nNo intervals available for comparison analysis.")
 
     # Create workout overview graph (for HTML export)
     create_workout_overview_graph(df)

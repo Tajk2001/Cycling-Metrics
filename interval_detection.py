@@ -369,11 +369,11 @@ def detect_intervals_ml_simple(file_path, ftp, save_plot=True):
         total_time = sum(duration for _, _, duration in intervals)
         print(f"   ⏱️  Total interval time: {total_time/60:.1f} minutes")
         
-        # Save intervals to file for future analysis
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        intervals_filename = f"detected_intervals_{timestamp}.txt"
+        # Save intervals to file for future analysis (DISABLED - using dashboard instead)
+        # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # intervals_filename = f"detected_intervals_{timestamp}.txt"
         
-        with open(intervals_filename, 'w') as f:
+        # with open(intervals_filename, 'w') as f:  # File generation disabled
             f.write(f"File: {file_path}\n")
             f.write(f"Detection Method: {detection_method}\n")
             f.write(f"FTP: {ftp}W\n")
@@ -396,7 +396,7 @@ def detect_intervals_ml_simple(file_path, ftp, save_plot=True):
                     f.write(f"  ML Confidence: {interval_confidence:.3f}\n")
                 f.write("\n")
         
-        print(f"   💾 Saved intervals to: {intervals_filename}")
+        # print(f"   💾 Saved intervals to: {intervals_filename}")  # File generation disabled
         
         print(f"\n📋 Interval Details:")
         for i, (start_time, end_time, duration) in enumerate(intervals, 1):

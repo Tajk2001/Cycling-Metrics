@@ -35,7 +35,7 @@ except Exception:
 pd.options.mode.copy_on_write = True
 
 # User Parameters
-file_path = "/Users/tajkrieger/Desktop/Training/Training5"
+file_path = ""  # Set to your FIT file path or leave empty for interactive input
 FTP = 290
 LTHR = 181
 rider_mass_kg = 52
@@ -3776,9 +3776,6 @@ def create_interval_plots(df, interval_df, evolution_analysis):
     fig1.add_hline(y=FTP, line_dash="dash", line_color="red", 
                    annotation_text=f"FTP ({FTP}W)")
     
-    # fig1.write_html("interval_power_comparison.html")  # Removed file generation
-    # print("Interval power comparison saved to interval_power_comparison.html")  # Plots shown in dashboard instead
-    
     # 2. Interval Evolution Over Time (for best intervals)
     if evolution_analysis:
         for interval_name, evolution in evolution_analysis.items():
@@ -3877,10 +3874,6 @@ def create_interval_plots(df, interval_df, evolution_analysis):
                 ))
             
             fig2.update_layout(annotations=annotations)
-            
-            # filename = f"interval_evolution_{interval_name.replace(' ', '_').replace(':', '_')}.html"
-            # fig2.write_html(filename)  # Removed file generation
-            # print(f"Interval evolution plot saved to {filename}")  # Plots shown in dashboard instead
     
     # 3. Interval Duration vs Power Relationship
     fig3 = go.Figure()
@@ -3929,9 +3922,6 @@ def create_interval_plots(df, interval_df, evolution_analysis):
     fig3.add_hline(y=FTP, line_dash="dash", line_color="red", 
                    annotation_text=f"FTP ({FTP}W)")
     
-    # fig3.write_html("interval_duration_vs_power.html")  # Removed file generation
-    # print("Interval duration vs power plot saved to interval_duration_vs_power.html")  # Plots shown in dashboard instead
-    
     # 4. Metric Consistency Analysis
     if evolution_analysis:
         fig4 = go.Figure()
@@ -3961,9 +3951,6 @@ def create_interval_plots(df, interval_df, evolution_analysis):
                 template='plotly_white',
                 height=400
             )
-            
-            # fig4.write_html("interval_power_consistency.html")  # Removed file generation
-            # print("Interval power consistency plot saved to interval_power_consistency.html")  # Plots shown in dashboard instead
     
     print("All interval plots created!")
 
@@ -4789,10 +4776,6 @@ def create_workout_overview_graph(df):
     
     fig.update_layout(annotations=annotations)
     
-    # Save to HTML file
-    # fig.write_html("workout_overview.html")  # Removed to prevent file creation
-    # print("Workout overview graph saved to workout_overview.html")  # Removed
-    
     # Create a simplified version with just the main metrics (Power, HR, Cadence)
     fig_simple = go.Figure()
     
@@ -4853,9 +4836,6 @@ def create_workout_overview_graph(df):
         height=500,
         showlegend=True
     )
-    
-    # fig_simple.write_html("workout_overview_simple.html")  # Removed to prevent file creation
-    # print("Simplified workout overview saved to workout_overview_simple.html")  # Removed
 
 
 def create_dash_dashboard(df, best10, micro_df, sprint_summary_df, long_intervals, evolution_analysis, interval_viz=None, interval_table=None):

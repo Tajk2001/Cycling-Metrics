@@ -36,7 +36,7 @@ To analyze a different file or change parameters, edit the top of `SprintV1.py`:
 
 ```python
 # User Parameters
-file_path = "/path/to/your/ride.fit"  # Change this
+file_path = ""  # Set to your FIT file path or leave empty for interactive input
 FTP = 290                              # Your FTP in watts
 LTHR = 181                             # Your LTHR in bpm
 rider_mass_kg = 52.5                   # Your mass in kg

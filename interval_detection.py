@@ -373,28 +373,29 @@ def detect_intervals_ml_simple(file_path, ftp, save_plot=True):
         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         # intervals_filename = f"detected_intervals_{timestamp}.txt"
         
-        # with open(intervals_filename, 'w') as f:  # File generation disabled
-            f.write(f"File: {file_path}\n")
-            f.write(f"Detection Method: {detection_method}\n")
-            f.write(f"FTP: {ftp}W\n")
-            f.write(f"Total Intervals: {len(intervals)}\n")
-            f.write(f"Total Time: {total_time/60:.1f} minutes\n")
-            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("-" * 50 + "\n")
-            
-            for i, (start_time, end_time, duration) in enumerate(intervals, 1):
-                start_idx = original_df.index.get_loc(start_time)
-                end_idx = original_df.index.get_loc(end_time)
-                interval_power = original_df['power'].iloc[start_idx:end_idx + 1]
-                avg_power = interval_power.mean()
-                max_power = interval_power.max()
-                
-                f.write(f"Interval {i}: {start_time} - {end_time} ({duration}s)\n")
-                f.write(f"  Power: {avg_power:.0f}W avg, {max_power:.0f}W max\n")
-                if probabilities is not None:
-                    interval_confidence = probabilities[start_idx:end_idx + 1].mean()
-                    f.write(f"  ML Confidence: {interval_confidence:.3f}\n")
-                f.write("\n")
+        # File generation disabled - all data available in dashboard
+        # with open(intervals_filename, 'w') as f:
+        #     f.write(f"File: {file_path}\n")
+        #     f.write(f"Detection Method: {detection_method}\n")
+        #     f.write(f"FTP: {ftp}W\n")
+        #     f.write(f"Total Intervals: {len(intervals)}\n")
+        #     f.write(f"Total Time: {total_time/60:.1f} minutes\n")
+        #     f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        #     f.write("-" * 50 + "\n")
+        #     
+        #     for i, (start_time, end_time, duration) in enumerate(intervals, 1):
+        #         start_idx = original_df.index.get_loc(start_time)
+        #         end_idx = original_df.index.get_loc(start_time)
+        #         interval_power = original_df['power'].iloc[start_idx:end_idx + 1]
+        #         avg_power = interval_power.mean()
+        #         max_power = interval_power.max()
+        #         
+        #         f.write(f"Interval {i}: {start_time} - {end_time} ({duration}s)\n")
+        #         f.write(f"  Power: {avg_power:.0f}W avg, {max_power:.0f}W max\n")
+        #         if probabilities is not None:
+        #             interval_confidence = probabilities[start_idx:end_idx + 1].mean()
+        #             f.write(f"  ML Confidence: {interval_confidence:.3f}\n")
+        #         f.write("\n")
         
         # print(f"   💾 Saved intervals to: {intervals_filename}")  # File generation disabled
         

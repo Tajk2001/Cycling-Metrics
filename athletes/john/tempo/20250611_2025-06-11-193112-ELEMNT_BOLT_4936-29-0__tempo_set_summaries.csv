@@ -1,0 +1,2 @@
+set_label,template_signature,num_intervals,cv_pct,fade_pct,hr_drift_pct,recovery_hr_drop_bpm,total_work_kj,avg_within_interval_hr_drift_pct,avg_pw_hr_decoupling_pct
+2x30,2x30,2,1.0569532441662552,-1.5060132364441248,-1.1160029067721073,4.599999999999994,966.139,0.6322475410786267,0.27968262637624863

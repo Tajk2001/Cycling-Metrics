@@ -1,0 +1,9 @@
+{
+  "name": "john",
+  "ftp_watts": 250.0,
+  "lthr_bpm": 170.0,
+  "weight_kg": 70.0,
+  "max_hr_bpm": null,
+  "resting_hr_bpm": null,
+  "notes": "Default profile - please update with actual values"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "taj",
+  "ftp_watts": 290.0,
+  "lthr_bpm": 181.0,
+  "weight_kg": 52.0,
+  "max_hr_bpm": null,
+  "resting_hr_bpm": null,
+  "notes": "Migrated from hardcoded config values"
+}

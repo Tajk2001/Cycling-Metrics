@@ -1,0 +1,2 @@
+set_label,template_signature,num_intervals,cv_pct,fade_pct,hr_drift_pct,recovery_hr_drop_bpm,total_work_kj,avg_within_interval_hr_drift_pct,avg_pw_hr_decoupling_pct,workout_category
+2x20 THR,2x20@THR,2,1.001104829623991,1.4058243652361933,1.3601898494944606,27.0,575.949,4.710638759359428,-9.034732742540484,thr

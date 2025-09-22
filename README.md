@@ -1,56 +1,81 @@
-# 🚴 Cycling Analysis System
+# Cycling Analysis Project
 
-**A comprehensive cycling power analysis system that automatically detects training intervals using machine learning and provides detailed sprint and interval analysis.**
+This repository contains cycling performance analysis tools and systems.
 
-## 🏗️ Project Structure
+## Project Structure
 
-```
-cycling_analysis/
-├── SprintV1.py               # 🧠 Main analysis script - use this!
-├── interval_detection.py      # 🤖 ML interval detection
-├── IntervalML.py             # 🔧 ML utilities and lap detection
-├── simple_bulk_training.py   # 🎯 Model training script
-├── trained_models/           # 🎯 Pre-trained ML models
-│   └── simple_comprehensive_model_20250820_125836.pkl
-├── requirements.txt           # 📦 Python dependencies
-└── README.md                 # 📖 This file
-```
+### 🚴‍♂️ **cycling_tracker_system/** - New Comprehensive System
+A complete cycling performance analysis system with lap-based interval detection, Andy Coggan power zones, and Normalized Power (NP) classification.
 
-## 🚀 Quick Start
+**Key Features:**
+- FIT file parsing and data extraction
+- Lap-based interval detection using FIT file markers
+- Andy Coggan's 7-zone power classification system
+- Normalized Power (NP) calculation for accurate training load assessment
+- Interactive web dashboard with Dash
+- Comprehensive metrics calculation
+- Data storage and export capabilities
 
-### 1. Install Dependencies
+**Quick Start:**
 ```bash
-pip install -r requirements.txt
+cd cycling_tracker_system
+pip install -r ../requirements.txt
+pip install -e .
+python run_app.py  # Launch dashboard
+python example_usage.py  # See examples
 ```
 
-### 2. Analyze a Ride
+See `cycling_tracker_system/README.md` for detailed documentation.
+
+### 📊 **Original Analysis Scripts** - Legacy Tools
+The original cycling analysis scripts and tools:
+
+- **SprintV1.py** - Original FIT file analysis script with lap extraction
+- **interval_detection.py** - Basic interval detection algorithms  
+- **IntervalML.py** - Machine learning-based interval detection
+- **simple_bulk_training.py** - Bulk training data processing
+- **trained_models/** - Pre-trained ML models
+
+### 🔧 **Development Environment**
+- **venv/** - Python virtual environment
+- **requirements.txt** - Python dependencies
+- **README.md** - This file
+
+## Getting Started
+
+### For the New System (Recommended)
 ```bash
-python SprintV1.py
+cd cycling_tracker_system
+pip install -r ../requirements.txt
+pip install -e .
+python example_usage.py
 ```
 
-**That's it!** The system will analyze your Test2 file with default parameters.
-
-## 🔧 Customization
-
-To analyze a different file or change parameters, edit the top of `SprintV1.py`:
-
-```python
-# User Parameters
-file_path = ""  # Set to your FIT file path or leave empty for interactive input
-FTP = 290                              # Your FTP in watts
-LTHR = 181                             # Your LTHR in bpm
-rider_mass_kg = 52.5                   # Your mass in kg
-crank_length_mm = 165                  # Your crank length in mm
+### For Original Scripts
+```bash
+source venv/bin/activate
+python SprintV1.py  # Original analysis script
 ```
 
-## 🎯 What It Does
+## System Comparison
 
-- **🏃 Sprint Analysis**: Finds your best 10-second efforts
-- **🤖 ML Interval Detection**: Automatically detects training intervals
-- **📊 Power Metrics**: Comprehensive power analysis
-- **📈 Evolution Analysis**: Tracks interval performance over time
-- **📱 Interactive Dashboard**: Beautiful visualization of results
+| Feature | New System | Original Scripts |
+|---------|------------|------------------|
+| **Architecture** | Modular package | Single scripts |
+| **Interval Detection** | Lap-based (FIT markers) | ML algorithms |
+| **Power Zones** | Andy Coggan (7 zones) | Basic zones |
+| **Zone Classification** | Normalized Power (NP) | Average power |
+| **User Interface** | Web dashboard + CLI | Command line only |
+| **Data Storage** | Multiple formats | Basic CSV |
+| **Testing** | Comprehensive test suite | No tests |
+| **Documentation** | Full documentation | Minimal |
 
-## 🎉 Ready to Go!
+## Recommendations
 
-Just run `python SprintV1.py` and get comprehensive insights into your training!
+- **Use the new system** (`cycling_tracker_system/`) for comprehensive analysis
+- **Reference original scripts** for specific algorithms or legacy approaches
+- **Both systems** can coexist and be used independently
+
+## License
+
+This project is licensed under the MIT License.
